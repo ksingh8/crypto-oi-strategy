@@ -22,7 +22,7 @@ async def get_open_interest(symbol: str) -> dict:
     oi_usd = float(data["openInterestValue"]) if "openInterestValue" in data else 0.0
     return {"oi": oi, "oi_usd": oi_usd}
 
-async def get_oi_history(symbol: str, period: str = "5m", limit: int = 100) -> list:
+async def get_oi_history(symbol: str, period: str = "5m", limit: int = 20) -> list:
     """OI history for trend analysis"""
     data = await fetch(f"{BASE_FUTURES}/futures/data/openInterestHist", {
         "symbol": symbol, "period": period, "limit": limit
@@ -43,7 +43,7 @@ async def get_funding_history(symbol: str, limit: int = 50) -> list:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/fundingRate", {"symbol": symbol, "limit": limit})
     return [{"timestamp": d["fundingTime"], "rate": float(d["fundingRate"])} for d in data]
 
-async def get_klines(symbol: str, interval: str = "5m", limit: int = 200) -> list:
+async def get_klines(symbol: str, interval: str = "5m", limit: int = 50) -> list:
     """OHLCV candles"""
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/klines", {
         "symbol": symbol, "interval": interval, "limit": limit
