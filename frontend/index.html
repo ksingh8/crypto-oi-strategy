@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OI Strategy — Paper Trading Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap');
+
+  :root {
+    --bg: #080c14;
+    --surface: #0d1421;
+    --surface2: #111a2e;
+    --border: #1e2d4a;
+    --text: #c8d8f0;
+    --muted: #4a6080;
+    --accent: #00d4ff;
+    --accent2: #7b5ea7;
+    --green: #00e5a0;
+    --red: #ff4466;
+    --yellow: #ffd060;
+    --font-mono: 'Space Mono', monospace;
+    --font-display: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  /* ── Header ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 28px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, #0d1421 0%, #080c14 100%);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: var(--font-display);
+    font-size: 20px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo span { color: var(--text); opacity: 0.5; font-weight: 400; font-size: 13px; }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 6px 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.5px;
+  }
+
+  .btn:hover {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  .btn.danger { color: var(--red); border-color: var(--red); }
+  .btn.danger:hover { background: var(--red); color: white; }
+
+  /* ── Layout ── */
+  .main {
+    padding: 24px 28px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  /* ── Symbol selector ── */
+  .symbol-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 24px;
+    align-items: center;
+  }
+
+  .symbol-tab {
+    font-family: var(--font-display);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 8px 20px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .symbol-tab.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+  }
+
+  /* ── Stat cards ── */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0.4;
+  }
+
+  .stat-label {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+
+  .stat-value {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 700;
+    line-height: 1;
+  }
+
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.accent { color: var(--accent); }
+  .stat-value.yellow { color: var(--yellow); }
+
+  /* ── Grid layout ── */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 16px;
+    margin-bottom: 16px;
+  }
+
+  @media (max-width: 1100px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+
+  /* ── Panel ── */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-title {
+    font-family: var(--font-display);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+  }
+
+  .panel-body {
+    padding: 16px;
+  }
+
+  /* ── Chart ── */
+  .chart-container {
+    position: relative;
+    height: 200px;
+  }
+
+  /* ── Indicators ── */
+  .indicator-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .indicator-item {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 10px 12px;
+  }
+
+  .ind-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    margin-bottom: 4px;
+  }
+
+  .ind-value {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .ind-bar {
+    height: 3px;
+    background: var(--border);
+    margin-top: 6px;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .ind-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.5s ease;
+  }
+
+  /* ── Trades table ── */
+  .table-wrap {
+    overflow-x: auto;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  thead th {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface2);
+  }
+
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+
+  tbody tr:hover { background: var(--surface2); }
+
+  tbody td {
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    font-family: var(--font-display);
+  }
+
+  .badge.long { background: rgba(0, 229, 160, 0.15); color: var(--green); border: 1px solid rgba(0,229,160,0.3); }
+  .badge.short { background: rgba(255, 68, 102, 0.15); color: var(--red); border: 1px solid rgba(255,68,102,0.3); }
+  .badge.open { background: rgba(0, 212, 255, 0.15); color: var(--accent); border: 1px solid rgba(0,212,255,0.3); }
+  .badge.closed { background: rgba(74, 96, 128, 0.2); color: var(--muted); border: 1px solid var(--border); }
+  .badge.tp { background: rgba(0, 229, 160, 0.15); color: var(--green); }
+  .badge.sl { background: rgba(255, 68, 102, 0.15); color: var(--red); }
+  .badge.manual { background: rgba(255, 208, 96, 0.15); color: var(--yellow); }
+
+  .pnl-pos { color: var(--green); font-weight: 700; }
+  .pnl-neg { color: var(--red); font-weight: 700; }
+
+  /* ── Signal feed ── */
+  .signal-list {
+    max-height: 300px;
+    overflow-y: auto;
+  }
+
+  .signal-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 10px;
+    align-items: start;
+  }
+
+  .signal-item:last-child { border-bottom: none; }
+
+  .signal-time {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+
+  .signal-reasons {
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+
+  .signal-conf {
+    font-family: var(--font-display);
+    font-size: 16px;
+    font-weight: 700;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* ── Open positions ── */
+  .position-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .position-card.long-card { border-left: 3px solid var(--green); }
+  .position-card.short-card { border-left: 3px solid var(--red); }
+
+  .pos-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .pos-symbol {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 700;
+  }
+
+  .pos-levels {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .pos-level {
+    font-size: 10px;
+  }
+
+  .pos-level-label {
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+  }
+
+  .pos-level-value {
+    font-family: var(--font-display);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .progress-bar {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 8px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s;
+  }
+
+  /* ── Live ticker ── */
+  .ticker-strip {
+    display: flex;
+    gap: 24px;
+    padding: 8px 0;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .ticker-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+  }
+
+  .ticker-symbol {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 13px;
+    color: var(--accent);
+  }
+
+  .ticker-price {
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .ticker-change { font-size: 11px; }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* ── Loading ── */
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--muted);
+    gap: 10px;
+  }
+
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Empty state ── */
+  .empty {
+    text-align: center;
+    padding: 32px;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  /* ── Reasons tooltip ── */
+  .reasons-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: help;
+  }
+
+  .last-update {
+    font-size: 10px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    ◈ OI STRATEGY
+    <span>PAPER TRADING</span>
+  </div>
+  <div class="header-right">
+    <div class="status-dot" id="statusDot"></div>
+    <span class="last-update" id="lastUpdate">—</span>
+    <button class="btn" onclick="runNow()">▶ RUN NOW</button>
+    <button class="btn" onclick="loadAll()">↺ REFRESH</button>
+  </div>
+</header>
+
+<div class="main">
+  <!-- Symbol tabs -->
+  <div class="symbol-bar" id="symbolBar">
+    <span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-right:4px;">SYMBOL</span>
+  </div>
+
+  <!-- Ticker strip -->
+  <div class="ticker-strip" id="tickerStrip">
+    <div class="loading"><div class="spinner"></div> Loading market data…</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-grid" id="statsGrid">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+
+  <!-- Open positions -->
+  <div class="panel" style="margin-bottom:16px;">
+    <div class="panel-header">
+      <span class="panel-title">Open Positions</span>
+      <span id="openCount" style="font-size:11px;color:var(--muted);">—</span>
+    </div>
+    <div class="panel-body" id="openPositions">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+
+  <!-- Charts row -->
+  <div class="grid-2" style="margin-bottom:16px;">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Price History</span>
+        <span style="font-size:10px;color:var(--muted);" id="priceSymbolLabel">—</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-container">
+          <canvas id="priceChart"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Open Interest History</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-container">
+          <canvas id="oiChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Indicators + Signals -->
+  <div class="grid-3" style="margin-bottom:16px;">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Live Indicators</span>
+        <span style="font-size:10px;color:var(--muted);" id="indSymbolLabel">—</span>
+      </div>
+      <div class="panel-body" id="indicatorsPanel">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Signal Feed</span>
+      </div>
+      <div class="signal-list" id="signalFeed">
+        <div class="loading"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trades table -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">All Trades</span>
+      <span id="tradeCount" style="font-size:11px;color:var(--muted);">—</span>
+    </div>
+    <div class="table-wrap" id="tradesTable">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let activeSymbol = null;
+let symbols = [];
+let priceChart = null;
+let oiChart = null;
+let latestIndicators = {};
+
+// ── Chart init ──────────────────────────────────────────────────────────────
+function initCharts() {
+  const chartDefaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 400 },
+    plugins: { legend: { display: false }, tooltip: {
+      backgroundColor: '#0d1421',
+      borderColor: '#1e2d4a',
+      borderWidth: 1,
+      titleColor: '#c8d8f0',
+      bodyColor: '#7b9cc0',
+      titleFont: { family: 'Space Mono' },
+      bodyFont: { family: 'Space Mono', size: 11 }
+    }},
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: '#1e2d4a', lineWidth: 0.5 },
+        ticks: { color: '#4a6080', font: { family: 'Space Mono', size: 10 } },
+        border: { display: false }
+      }
+    }
+  };
+
+  priceChart = new Chart(document.getElementById('priceChart'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ data: [], borderColor: '#00d4ff', borderWidth: 1.5, fill: true, backgroundColor: 'rgba(0,212,255,0.05)', pointRadius: 0, tension: 0.3 }] },
+    options: { ...chartDefaults }
+  });
+
+  oiChart = new Chart(document.getElementById('oiChart'), {
+    type: 'line',
+    data: { labels: [], datasets: [{ data: [], borderColor: '#7b5ea7', borderWidth: 1.5, fill: true, backgroundColor: 'rgba(123,94,167,0.08)', pointRadius: 0, tension: 0.3 }] },
+    options: { ...chartDefaults }
+  });
+}
+
+// ── API calls ───────────────────────────────────────────────────────────────
+async function api(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`API ${path} → ${r.status}`);
+  return r.json();
+}
+
+async function loadConfig() {
+  const cfg = await api('/api/config');
+  symbols = cfg.symbols || ['BTCUSDT'];
+  activeSymbol = activeSymbol || symbols[0];
+  renderSymbolBar();
+}
+
+async function loadStats() {
+  const stats = await api('/api/stats');
+  renderStats(stats);
+}
+
+async function loadTrades() {
+  const trades = await api('/api/trades?limit=100');
+  renderTrades(trades);
+}
+
+async function loadSignals() {
+  const signals = await api('/api/signals?limit=30');
+  renderSignals(signals);
+}
+
+async function loadOpenTrades() {
+  const trades = await api('/api/open-trades');
+  renderOpenTrades(trades);
+}
+
+async function loadPriceHistory() {
+  const data = await api(`/api/price-history/${activeSymbol}?limit=150`);
+  renderPriceChart(data);
+}
+
+async function loadMarketData() {
+  const strip = document.getElementById('tickerStrip');
+  const results = await Promise.allSettled(symbols.map(s => api(`/api/market-data/${s}`)));
+  
+  strip.innerHTML = '';
+  results.forEach((r, i) => {
+    if (r.status !== 'fulfilled') return;
+    const sym = symbols[i];
+    const ticker = r.value?.data?.ticker;
+    if (!ticker) return;
+    
+    const pct = parseFloat(ticker.price_change_pct || 0);
+    const color = pct >= 0 ? 'var(--green)' : 'var(--red)';
+    
+    strip.innerHTML += `
+      <div class="ticker-item">
+        <span class="ticker-symbol">${sym.replace('USDT','')}</span>
+        <span class="ticker-price" style="color:${color}">$${parseFloat(ticker.price).toLocaleString('en', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+        <span class="ticker-change" style="color:${color}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>
+        <span style="font-size:10px;color:var(--muted)">Vol: ${(ticker.volume/1000).toFixed(0)}K</span>
+      </div>
+    `;
+    
+    if (sym === activeSymbol) {
+      latestIndicators = r.value?.data || {};
+      renderIndicators(latestIndicators);
+    }
+  });
+}
+
+// ── Render functions ─────────────────────────────────────────────────────────
+function renderSymbolBar() {
+  const bar = document.getElementById('symbolBar');
+  bar.innerHTML = '<span style="font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-right:4px;">SYMBOL</span>';
+  symbols.forEach(s => {
+    const el = document.createElement('div');
+    el.className = 'symbol-tab' + (s === activeSymbol ? ' active' : '');
+    el.textContent = s.replace('USDT', '/USDT');
+    el.onclick = () => { activeSymbol = s; renderSymbolBar(); loadPriceHistory(); renderIndicators(latestIndicators); };
+    bar.appendChild(el);
+  });
+}
+
+function renderStats(s) {
+  const isProfit = s.total_pnl_usd >= 0;
+  document.getElementById('statsGrid').innerHTML = `
+    <div class="stat-card">
+      <div class="stat-label">Total Trades</div>
+      <div class="stat-value accent">${s.total_trades}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value ${s.win_rate >= 50 ? 'green' : 'red'}">${s.win_rate}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total PnL</div>
+      <div class="stat-value ${isProfit ? 'green' : 'red'}">${isProfit ? '+' : ''}$${s.total_pnl_usd}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Wins / Losses</div>
+      <div class="stat-value"><span style="color:var(--green)">${s.wins}</span> / <span style="color:var(--red)">${s.losses}</span></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Best Trade</div>
+      <div class="stat-value green">${s.best_trade_pct > 0 ? '+' : ''}${s.best_trade_pct}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Worst Trade</div>
+      <div class="stat-value red">${s.worst_trade_pct}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg PnL</div>
+      <div class="stat-value ${s.avg_pnl_pct >= 0 ? 'green' : 'red'}">${s.avg_pnl_pct >= 0 ? '+' : ''}${s.avg_pnl_pct}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Open Now</div>
+      <div class="stat-value yellow">${s.open_trades}</div>
+    </div>
+  `;
+}
+
+function renderOpenTrades(trades) {
+  document.getElementById('openCount').textContent = `${trades.length} active`;
+  const el = document.getElementById('openPositions');
+  
+  if (!trades.length) {
+    el.innerHTML = '<div class="empty">No open positions</div>';
+    return;
+  }
+  
+  el.innerHTML = trades.map(t => {
+    const isLong = t.direction === 'LONG';
+    const entry = t.entry_price;
+    const tp = t.tp_price;
+    const sl = t.sl_price;
+    
+    // Progress to TP (approximate — we don't have live price per trade here)
+    const range = Math.abs(tp - sl);
+    const reasons = typeof t.reasons === 'string' ? JSON.parse(t.reasons) : (t.reasons || []);
+    const inds = typeof t.indicators === 'string' ? JSON.parse(t.indicators) : (t.indicators || {});
+    const currentPrice = inds.current_price || entry;
+    const progress = isLong
+      ? Math.max(0, Math.min(100, (currentPrice - sl) / range * 100))
+      : Math.max(0, Math.min(100, (sl - currentPrice) / range * 100));
+    
+    const progressColor = progress > 60 ? 'var(--green)' : progress > 30 ? 'var(--yellow)' : 'var(--red)';
+    
+    return `
+      <div class="position-card ${isLong ? 'long-card' : 'short-card'}">
+        <div class="pos-header">
+          <div>
+            <span class="pos-symbol">${t.symbol}</span>
+            <span class="badge ${isLong ? 'long' : 'short'}" style="margin-left:8px;">${t.direction}</span>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:10px;color:var(--muted)">${formatTime(t.opened_at)}</div>
+            <div style="font-size:10px;color:var(--muted)">Conf: ${t.confidence}%</div>
+          </div>
+        </div>
+        <div class="pos-levels">
+          <div class="pos-level">
+            <div class="pos-level-label">Entry</div>
+            <div class="pos-level-value">${entry.toLocaleString()}</div>
+          </div>
+          <div class="pos-level">
+            <div class="pos-level-label">Take Profit</div>
+            <div class="pos-level-value" style="color:var(--green)">${tp.toLocaleString()}</div>
+          </div>
+          <div class="pos-level">
+            <div class="pos-level-label">Stop Loss</div>
+            <div class="pos-level-value" style="color:var(--red)">${sl.toLocaleString()}</div>
+          </div>
+        </div>
+        ${reasons.length ? `<div style="font-size:11px;color:var(--muted);margin-bottom:8px;">↳ ${reasons[0]}</div>` : ''}
+        <div class="progress-bar">
+          <div class="progress-fill" style="width:${progress}%;background:${progressColor}"></div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderTrades(trades) {
+  document.getElementById('tradeCount').textContent = `${trades.length} trades`;
+  const el = document.getElementById('tradesTable');
+  
+  if (!trades.length) {
+    el.innerHTML = '<div class="empty">No trades yet — waiting for signals…</div>';
+    return;
+  }
+  
+  el.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Symbol</th>
+          <th>Dir</th>
+          <th>Status</th>
+          <th>Entry</th>
+          <th>TP</th>
+          <th>SL</th>
+          <th>Exit</th>
+          <th>PnL %</th>
+          <th>PnL $</th>
+          <th>Exit Reason</th>
+          <th>Confidence</th>
+          <th>Duration</th>
+          <th>Opened</th>
+          <th>Signal</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${trades.map(t => {
+          const pnl = t.pnl_pct;
+          const pnlClass = pnl === null ? '' : pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+          const pnlStr = pnl === null ? '—' : `${pnl >= 0 ? '+' : ''}${pnl.toFixed(3)}%`;
+          const pnlUsd = t.pnl_usd === null ? '—' : `${t.pnl_usd >= 0 ? '+' : ''}$${t.pnl_usd.toFixed(2)}`;
+          const exitReasonClass = t.exit_reason === 'TP' ? 'tp' : t.exit_reason === 'SL' ? 'sl' : 'manual';
+          const reasons = t.reasons || [];
+          const reasonStr = reasons.slice(0, 2).join(' | ');
+          
+          return `
+            <tr>
+              <td style="color:var(--muted)">${t.id}</td>
+              <td style="font-family:var(--font-display);font-weight:700">${t.symbol}</td>
+              <td><span class="badge ${t.direction.toLowerCase()}">${t.direction}</span></td>
+              <td><span class="badge ${t.status.toLowerCase()}">${t.status}</span></td>
+              <td>${t.entry_price.toLocaleString()}</td>
+              <td style="color:var(--green)">${t.tp_price.toLocaleString()}</td>
+              <td style="color:var(--red)">${t.sl_price.toLocaleString()}</td>
+              <td>${t.exit_price ? t.exit_price.toLocaleString() : '—'}</td>
+              <td class="${pnlClass}">${pnlStr}</td>
+              <td class="${pnlClass}">${pnlUsd}</td>
+              <td>${t.exit_reason ? `<span class="badge ${exitReasonClass}">${t.exit_reason}</span>` : '—'}</td>
+              <td>${t.confidence}%</td>
+              <td style="color:var(--muted)">${t.duration_minutes ? t.duration_minutes.toFixed(0) + 'm' : '—'}</td>
+              <td style="color:var(--muted);font-size:11px">${formatTime(t.opened_at)}</td>
+              <td class="reasons-cell" title="${reasons.join('\n')}">${reasonStr || '—'}</td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderSignals(signals) {
+  const el = document.getElementById('signalFeed');
+  if (!signals.length) {
+    el.innerHTML = '<div class="empty">No signals yet</div>';
+    return;
+  }
+  
+  el.innerHTML = signals.map(s => {
+    const color = s.direction === 'LONG' ? 'var(--green)' : s.direction === 'SHORT' ? 'var(--red)' : 'var(--muted)';
+    const reasons = s.reasons || [];
+    return `
+      <div class="signal-item">
+        <div>
+          <div style="font-family:var(--font-display);font-weight:700;color:${color};font-size:13px">${s.direction}</div>
+          <div class="signal-time">${formatTime(s.created_at)}</div>
+          <div style="font-size:10px;color:var(--muted)">${s.symbol}</div>
+        </div>
+        <div class="signal-reasons">${reasons.slice(0, 2).map(r => `↳ ${r}`).join('<br>')}</div>
+        <div class="signal-conf" style="color:${color}">${s.confidence}<span style="font-size:10px;color:var(--muted)">%</span></div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderIndicators(data) {
+  const el = document.getElementById('indicatorsPanel');
+  document.getElementById('indSymbolLabel').textContent = activeSymbol;
+  document.getElementById('priceSymbolLabel').textContent = activeSymbol;
+  
+  const signals = (data.data?.signals) || {};
+  const oi = data.data?.oi || {};
+  const funding = data.data?.funding || {};
+  const ls = (data.data?.ls_ratio || []).slice(-1)[0] || {};
+  const ticker = data.data?.ticker || {};
+  
+  const fundingRate = funding.funding_rate ? (funding.funding_rate * 100).toFixed(4) : '—';
+  const fundingColor = funding.funding_rate > 0.03 ? 'var(--red)' : funding.funding_rate < -0.01 ? 'var(--green)' : 'var(--text)';
+  
+  el.innerHTML = `
+    <div class="indicator-grid">
+      <div class="indicator-item">
+        <div class="ind-label">Mark Price</div>
+        <div class="ind-value" style="color:var(--accent)">${ticker.price ? '$' + parseFloat(ticker.price).toLocaleString() : '—'}</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">24h Change</div>
+        <div class="ind-value" style="color:${parseFloat(ticker.price_change_pct||0) >= 0 ? 'var(--green)' : 'var(--red)'}">${parseFloat(ticker.price_change_pct||0).toFixed(2)}%</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">Open Interest</div>
+        <div class="ind-value" style="font-size:15px">${oi.oi ? (oi.oi/1000).toFixed(1) + 'K' : '—'}</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">OI (USD)</div>
+        <div class="ind-value" style="font-size:14px">${oi.oi_usd ? '$' + (oi.oi_usd/1e6).toFixed(1) + 'M' : '—'}</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">Funding Rate</div>
+        <div class="ind-value" style="color:${fundingColor};font-size:16px">${fundingRate}%</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">L/S Ratio</div>
+        <div class="ind-value" style="font-size:16px">${ls.long_short_ratio ? parseFloat(ls.long_short_ratio).toFixed(3) : '—'}</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">Long %</div>
+        <div class="ind-value" style="color:var(--green)">${ls.long_account ? (parseFloat(ls.long_account)*100).toFixed(1) + '%' : '—'}</div>
+      </div>
+      <div class="indicator-item">
+        <div class="ind-label">Short %</div>
+        <div class="ind-value" style="color:var(--red)">${ls.short_account ? (parseFloat(ls.short_account)*100).toFixed(1) + '%' : '—'}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderPriceChart(history) {
+  if (!history.length) return;
+  
+  const labels = history.map(h => formatTime(h.timestamp, true));
+  const prices = history.map(h => h.price);
+  const oiData = history.map(h => h.oi);
+  
+  priceChart.data.labels = labels;
+  priceChart.data.datasets[0].data = prices;
+  priceChart.update('none');
+  
+  const validOi = oiData.filter(Boolean);
+  if (validOi.length) {
+    oiChart.data.labels = labels;
+    oiChart.data.datasets[0].data = oiData;
+    oiChart.update('none');
+  }
+}
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+function formatTime(iso, short = false) {
+  if (!iso) return '—';
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  if (short) return d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function runNow() {
+  const btn = document.querySelector('.btn');
+  btn.textContent = '⏳ RUNNING…';
+  btn.disabled = true;
+  try {
+    await fetch(API + '/api/run-now', { method: 'POST' });
+    await loadAll();
+  } finally {
+    btn.textContent = '▶ RUN NOW';
+    btn.disabled = false;
+  }
+}
+
+async function loadAll() {
+  try {
+    await loadConfig();
+    await Promise.allSettled([
+      loadStats(),
+      loadTrades(),
+      loadSignals(),
+      loadOpenTrades(),
+      loadPriceHistory(),
+      loadMarketData()
+    ]);
+    document.getElementById('lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    document.getElementById('statusDot').style.background = 'var(--green)';
+  } catch(e) {
+    console.error(e);
+    document.getElementById('statusDot').style.background = 'var(--red)';
+  }
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+initCharts();
+loadAll();
+setInterval(loadAll, 30000); // auto-refresh every 30s
+</script>
+</body>
+</html>
