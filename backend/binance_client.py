@@ -15,15 +15,12 @@ async def fetch(url: str, params: dict = {}) -> dict | list:
         return r.json()
 
 async def get_open_interest(symbol: str) -> dict:
-    """Current OI snapshot"""
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/openInterest", {"symbol": symbol})
     oi = float(data.get("openInterest", 0))
-    # openInterestValue may be restricted by region — estimate from mark price if missing
     oi_usd = float(data["openInterestValue"]) if "openInterestValue" in data else 0.0
     return {"oi": oi, "oi_usd": oi_usd}
 
 async def get_oi_history(symbol: str, period: str = "5m", limit: int = 20) -> list:
-    """OI history for trend analysis"""
     data = await fetch(f"{BASE_FUTURES}/futures/data/openInterestHist", {
         "symbol": symbol, "period": period, "limit": limit
     })
@@ -31,7 +28,6 @@ async def get_oi_history(symbol: str, period: str = "5m", limit: int = 20) -> li
              "oi_usd": float(d["sumOpenInterestValue"])} for d in data]
 
 async def get_funding_rate(symbol: str) -> dict:
-    """Current funding rate"""
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/premiumIndex", {"symbol": symbol})
     return {
         "funding_rate": float(data["lastFundingRate"]),
@@ -44,7 +40,6 @@ async def get_funding_history(symbol: str, limit: int = 50) -> list:
     return [{"timestamp": d["fundingTime"], "rate": float(d["fundingRate"])} for d in data]
 
 async def get_klines(symbol: str, interval: str = "5m", limit: int = 50) -> list:
-    """OHLCV candles"""
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/klines", {
         "symbol": symbol, "interval": interval, "limit": limit
     })
@@ -55,7 +50,6 @@ async def get_klines(symbol: str, interval: str = "5m", limit: int = 50) -> list
     } for d in data]
 
 async def get_long_short_ratio(symbol: str, period: str = "5m", limit: int = 50) -> list:
-    """Global long/short account ratio"""
     data = await fetch(f"{BASE_FUTURES}/futures/data/globalLongShortAccountRatio", {
         "symbol": symbol, "period": period, "limit": limit
     })
@@ -64,7 +58,6 @@ async def get_long_short_ratio(symbol: str, period: str = "5m", limit: int = 50)
             for d in data]
 
 async def get_liquidations(symbol: str, limit: int = 50) -> list:
-    """Recent liquidation orders"""
     try:
         data = await fetch(f"{BASE_FUTURES}/fapi/v1/allForceOrders", {
             "symbol": symbol, "limit": limit
@@ -86,7 +79,7 @@ async def get_ticker_24h(symbol: str) -> dict:
     }
 
 async def get_all_market_data(symbol: str) -> dict:
-    """Fetch all needed data concurrently"""
+    """Fetch all needed data concurrently — includes 4H klines for HTF trend filter"""
     results = await asyncio.gather(
         get_open_interest(symbol),
         get_oi_history(symbol, "5m", 50),
@@ -94,9 +87,10 @@ async def get_all_market_data(symbol: str) -> dict:
         get_klines(symbol, "5m", 100),
         get_long_short_ratio(symbol, "5m", 50),
         get_ticker_24h(symbol),
+        get_klines(symbol, "4h", 210),   # HTF trend — EMA50/200 needs 200+ bars
         return_exceptions=True
     )
-    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker"]
+    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker", "htf_klines"]
     out = {}
     for k, v in zip(keys, results):
         if isinstance(v, Exception):

@@ -21,9 +21,9 @@ logger = logging.getLogger(__name__)
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
     "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(","),
-    "tp_pct": float(os.getenv("TP_PCT", "1.5")),
+    "tp_pct": float(os.getenv("TP_PCT", "2.0")),
     "sl_pct": float(os.getenv("SL_PCT", "0.8")),
-    "min_confidence": float(os.getenv("MIN_CONFIDENCE", "45")),
+    "min_confidence": float(os.getenv("MIN_CONFIDENCE", "40")),
     "position_size_usd": float(os.getenv("POSITION_SIZE_USD", "100")),
     "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL", "5")),
 }
@@ -59,8 +59,9 @@ async def run_strategy_cycle():
                 ls_ratio=ls_ratio
             )
 
-            # Check existing positions
-            pt.check_open_positions(current_price, symbol)
+            # Check existing positions — pass klines so candle highs/lows catch missed hits
+            klines = market_data.get("klines") or []
+            pt.check_open_positions(current_price, symbol, klines)
 
             # Generate signal
             signal = generate_signal(market_data, CONFIG)
