@@ -13,7 +13,7 @@ Entry conditions:
   LONG:  4H bullish + OI/funding/RSI/LS at least 2 signals pointing long + score >= 40
   SHORT: 4H bearish + OI/funding/RSI/LS at least 2 signals pointing short + score >= 40
 
-TP: 2.0% | SL: 0.8% | R:R: 2.5:1
+TP: 3.0% | SL: 1.2% | R:R: 2.5:1
 """
 
 import statistics
@@ -41,9 +41,15 @@ def calculate_rsi(closes: list[float], period: int = 14) -> float:
     if len(closes) < period + 1:
         return 50.0
     deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-    recent_deltas = deltas[-(period):]
-    avg_gain = sum(d for d in recent_deltas if d > 0) / period
-    avg_loss = sum(-d for d in recent_deltas if d < 0) / period
+    gains  = [max(d, 0) for d in deltas]
+    losses = [max(-d, 0) for d in deltas]
+    # Seed with simple average over first period
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    # Wilder's smoothing for remaining bars
+    for g, l in zip(gains[period:], losses[period:]):
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss
@@ -109,6 +115,131 @@ def calculate_ls_signal(ls_history: list[dict], lookback: int = 6) -> dict:
     return {"signal": signal, "ratio": current_ratio, "momentum": momentum}
 
 
+
+def calculate_taker_pressure_signal(taker_history: list, lookback: int = 6) -> dict:
+    """
+    Detect aggressive taker pressure as a liquidation proxy.
+    buySellRatio >> 1  → shorts being squeezed (bullish)
+    buySellRatio << 1  → longs being liquidated (bearish)
+    Compares recent bars to their own baseline to catch spikes.
+    """
+    if not taker_history or len(taker_history) < 3:
+        return {"signal": "neutral", "ratio": 1.0, "ratio_vs_baseline": 1.0,
+                "buy_vol": 0, "sell_vol": 0, "score": 0}
+
+    recent  = taker_history[-lookback:]
+    current = recent[-1]
+    baseline_ratios = [b["buy_sell_ratio"] for b in taker_history[:-lookback]] or [1.0]
+    baseline_avg = sum(baseline_ratios) / len(baseline_ratios)
+
+    ratio = current["buy_sell_ratio"]
+    ratio_vs_baseline = ratio / baseline_avg if baseline_avg > 0 else 1.0
+
+    # Recent trend: is pressure accelerating?
+    recent_avg = sum(b["buy_sell_ratio"] for b in recent) / len(recent)
+
+    # Volume spike: is this bar unusually active?
+    all_vols = [b["buy_vol"] + b["sell_vol"] for b in taker_history]
+    avg_vol  = sum(all_vols) / len(all_vols)
+    cur_vol  = current["buy_vol"] + current["sell_vol"]
+    vol_spike = cur_vol / avg_vol if avg_vol > 0 else 1.0
+
+    # Score: based on how extreme the ratio is vs baseline + volume confirmation
+    score = 0
+    if ratio_vs_baseline > 1.8 and ratio > 1.4:      # strong short squeeze
+        score = 30
+        signal = "bullish_strong"
+    elif ratio_vs_baseline > 1.4 or ratio > 1.5:     # moderate short squeeze
+        score = 18
+        signal = "bullish"
+    elif ratio_vs_baseline < 0.55 and ratio < 0.7:   # strong long liquidation
+        score = 30
+        signal = "bearish_strong"
+    elif ratio_vs_baseline < 0.7 or ratio < 0.65:    # moderate long liquidation
+        score = 18
+        signal = "bearish"
+    else:
+        score = 0
+        signal = "neutral"
+
+    # Boost score if accompanied by a volume spike (more conviction)
+    if vol_spike > 1.8 and signal != "neutral":
+        score = min(score + 10, 40)
+
+    return {
+        "signal": signal,
+        "ratio": round(ratio, 3),
+        "ratio_vs_baseline": round(ratio_vs_baseline, 2),
+        "buy_vol": round(current["buy_vol"], 1),
+        "sell_vol": round(current["sell_vol"], 1),
+        "vol_spike": round(vol_spike, 2),
+        "score": score,
+    }
+
+
+def calculate_delta_signal(taker_history: list, klines: list) -> dict:
+    """
+    Compute per-bar delta (buy_vol - sell_vol) and Cumulative Volume Delta (CVD).
+    CVD rising + price rising   = bullish confirmation (new money, real buying)
+    CVD falling + price falling = bearish confirmation (real selling)
+    CVD rising + price falling  = bullish divergence   (accumulation, potential reversal up)
+    CVD falling + price rising  = bearish divergence   (distribution, potential reversal down)
+    """
+    if not taker_history or len(taker_history) < 6:
+        return {"signal": "neutral", "delta_last": 0, "cvd": 0,
+                "cvd_slope": 0, "divergence": False, "score": 0}
+
+    # Per-bar delta
+    deltas = [b["buy_vol"] - b["sell_vol"] for b in taker_history]
+
+    # Rolling CVD over available window
+    cvd_series = []
+    running = 0.0
+    for d in deltas:
+        running += d
+        cvd_series.append(running)
+
+    # Normalise so CVD starts at 0 in this window
+    baseline = cvd_series[0]
+    cvd_series = [v - baseline for v in cvd_series]
+
+    # Slope over last 6 bars (~30 min)
+    lookback = min(6, len(cvd_series))
+    cvd_recent_slope = cvd_series[-1] - cvd_series[-lookback]
+
+    # Price slope over same period
+    price_slope = 0.0
+    if klines and len(klines) >= lookback:
+        price_slope = klines[-1]["close"] - klines[-lookback]["close"]
+
+    cvd_rising   = cvd_recent_slope > 0
+    price_rising = price_slope > 0
+    divergence   = cvd_rising != price_rising
+
+    if not divergence:
+        if cvd_rising:
+            signal = "bullish_confirm"
+            score  = 22
+        else:
+            signal = "bearish_confirm"
+            score  = 22
+    else:
+        if cvd_rising:          # CVD up, price down → accumulation
+            signal = "bullish_divergence"
+            score  = 16
+        else:                   # CVD down, price up → distribution
+            signal = "bearish_divergence"
+            score  = 16
+
+    return {
+        "signal":        signal,
+        "delta_last":    round(deltas[-1], 2),
+        "cvd":           round(cvd_series[-1], 2),
+        "cvd_slope":     round(cvd_recent_slope, 2),
+        "divergence":    divergence,
+        "score":         score,
+    }
+
 def get_htf_trend(htf_klines: list[dict]) -> dict:
     """Compute 4H trend using EMA50 vs EMA200."""
     if not htf_klines or len(htf_klines) < 50:
@@ -125,8 +256,8 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     Main signal generator. Returns a Signal object.
     Includes 4H HTF trend filter and minimum 2-signal confluence requirement.
     """
-    tp_pct = config.get("tp_pct", 2.0)   # Updated: 2.0% TP for better R:R
-    sl_pct = config.get("sl_pct", 0.8)
+    tp_pct = config.get("tp_pct", 3.0)   # Updated: 3.0% TP — wider target, same 2.5:1 R:R
+    sl_pct = config.get("sl_pct", 1.2)   # Updated: 1.2% SL — avoids noise-stops on swings
 
     klines      = market_data.get("klines") or []
     htf_klines  = market_data.get("htf_klines") or []
@@ -135,6 +266,7 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     ls_history  = market_data.get("ls_ratio") or []
     ticker      = market_data.get("ticker") or {}
 
+    taker_history = market_data.get("taker_ratio") or []
     closes = [k["close"] for k in klines] if klines else []
     current_price = ticker.get("price") or (closes[-1] if closes else 0)
 
@@ -150,6 +282,8 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     oi_mom     = calculate_oi_momentum(oi_history)
     funding_sig = calculate_funding_signal(funding.get("funding_rate", 0))
     ls_sig     = calculate_ls_signal(ls_history)
+    taker_sig  = calculate_taker_pressure_signal(taker_history)
+    delta_sig  = calculate_delta_signal(taker_history, klines)
 
     indicators = {
         "rsi": round(rsi, 2),
@@ -165,6 +299,13 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
         "htf_trend": htf_trend,
         "htf_ema50": htf["ema50"],
         "htf_ema200": htf["ema200"],
+        "taker_ratio": round(taker_sig["ratio"], 3),
+        "taker_vs_baseline": round(taker_sig["ratio_vs_baseline"], 2),
+        "taker_vol_spike": round(taker_sig["vol_spike"], 2),
+        "delta_last": delta_sig["delta_last"],
+        "cvd": delta_sig["cvd"],
+        "cvd_slope": delta_sig["cvd_slope"],
+        "cvd_signal": delta_sig["signal"],
     }
 
     # --- Directional scoring ---
@@ -245,12 +386,68 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     else:
         reasons.append(f"LS ratio neutral ({ls_sig['ratio']:.2f})")
 
+    # 6. Taker pressure (liquidation proxy)
+    taker_signal = taker_sig["signal"]
+    taker_score  = taker_sig["score"]
+    if taker_signal in ("bullish", "bullish_strong"):
+        vol_note = f" (vol spike x{taker_sig['vol_spike']:.1f})" if taker_sig["vol_spike"] > 1.8 else ""
+        reasons.append(
+            f"Taker pressure bullish — buy/sell ratio {taker_sig['ratio']:.2f} "
+            f"({taker_sig['ratio_vs_baseline']:.1f}x baseline){vol_note} — shorts being squeezed"
+        )
+        long_score  += taker_score
+        long_signals += 1
+    elif taker_signal in ("bearish", "bearish_strong"):
+        vol_note = f" (vol spike x{taker_sig['vol_spike']:.1f})" if taker_sig["vol_spike"] > 1.8 else ""
+        reasons.append(
+            f"Taker pressure bearish — buy/sell ratio {taker_sig['ratio']:.2f} "
+            f"({taker_sig['ratio_vs_baseline']:.1f}x baseline){vol_note} — longs being liquidated"
+        )
+        short_score  += taker_score
+        short_signals += 1
+    else:
+        reasons.append(f"Taker pressure neutral (ratio {taker_sig['ratio']:.2f})")
+
+    # 7. Delta / CVD signal
+    delta_signal = delta_sig["signal"]
+    delta_score  = delta_sig["score"]
+    cvd_note = f"CVD {delta_sig['cvd']:+.0f} (slope {delta_sig['cvd_slope']:+.1f})"
+    if delta_signal == "bullish_confirm":
+        reasons.append(f"CVD confirming — real buying pressure ({cvd_note})")
+        long_score  += delta_score; long_signals  += 1
+    elif delta_signal == "bearish_confirm":
+        reasons.append(f"CVD confirming — real selling pressure ({cvd_note})")
+        short_score += delta_score; short_signals += 1
+    elif delta_signal == "bullish_divergence":
+        # Only trust divergence if taker pressure is not actively bearish
+        # (taker shows what is happening NOW; divergence is backward-looking)
+        if taker_sig["ratio"] >= 0.80:
+            reasons.append(f"CVD bullish divergence — accumulation while price fell ({cvd_note})")
+            long_score  += delta_score; long_signals  += 1
+        else:
+            reasons.append(
+                f"CVD bullish divergence IGNORED — taker actively bearish "
+                f"({taker_sig['ratio']:.2f}x) overrides backward-looking CVD"
+            )
+    elif delta_signal == "bearish_divergence":
+        # Only trust divergence if taker pressure is not actively bullish
+        if taker_sig["ratio"] <= 1.20:
+            reasons.append(f"CVD bearish divergence — distribution while price rose ({cvd_note})")
+            short_score += delta_score; short_signals += 1
+        else:
+            reasons.append(
+                f"CVD bearish divergence IGNORED — taker actively bullish "
+                f"({taker_sig['ratio']:.2f}x) overrides backward-looking CVD"
+            )
+    else:
+        reasons.append(f"CVD neutral ({cvd_note})")
+
     # --- Determine direction ---
     # Rules:
     # 1. Score must reach min_confidence threshold
     # 2. Must have at least 2 distinct signals agreeing (not just 1 strong RSI alone)
     # 3. 4H trend must not be against the trade direction
-    min_score = config.get("min_confidence", 40)
+    min_score = config.get("min_confidence", 65)   # Updated: 65 min — quality over quantity
     MIN_SIGNALS = 2   # require at least 2 distinct indicators pointing same way
 
     long_ok  = (long_score > short_score
@@ -262,6 +459,40 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 and short_score >= min_score
                 and short_signals >= MIN_SIGNALS
                 and htf_trend != "bullish")   # don't short in 4H uptrend
+
+    # ── RSI quality gates ──────────────────────────────────────────────────
+    # Empirically: LONGs at RSI >= 80 have 0% win rate (chasing extended moves).
+    # LONGs at RSI 62-80 only work when funding is actively bullish (shorts paying).
+    # Mirror logic for SHORTs.
+    funding_bullish = funding_sig["signal"] in ("bullish_mild", "bullish_extreme")
+    funding_bearish = funding_sig["signal"] in ("bearish_mild", "bearish_extreme")
+
+    if long_ok:
+        if rsi >= 80:
+            long_ok = False
+            reasons.append(
+                f"Quality gate: RSI {rsi:.0f} ≥ 80 — price is extended, not chasing a long here"
+            )
+        elif rsi >= 62 and not funding_bullish:
+            long_ok = False
+            reasons.append(
+                f"Quality gate: RSI elevated ({rsi:.0f}) with neutral funding — "
+                f"need funding support to long an extended move"
+            )
+
+    if short_ok:
+        if rsi <= 20:
+            short_ok = False
+            reasons.append(
+                f"Quality gate: RSI {rsi:.0f} ≤ 20 — price is oversold, not chasing a short here"
+            )
+        elif rsi <= 38 and not funding_bearish:
+            short_ok = False
+            reasons.append(
+                f"Quality gate: RSI low ({rsi:.0f}) with neutral funding — "
+                f"need funding support to short an oversold move"
+            )
+
 
     if long_ok:
         direction  = "LONG"

@@ -16,9 +16,9 @@ async def fetch(url: str, params: dict = {}) -> dict | list:
 
 async def get_open_interest(symbol: str) -> dict:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/openInterest", {"symbol": symbol})
+    # Note: openInterestValue is only in /openInterestHist, not this snapshot endpoint
     oi = float(data.get("openInterest", 0))
-    oi_usd = float(data["openInterestValue"]) if "openInterestValue" in data else 0.0
-    return {"oi": oi, "oi_usd": oi_usd}
+    return {"oi": oi, "oi_usd": 0.0}
 
 async def get_oi_history(symbol: str, period: str = "5m", limit: int = 20) -> list:
     data = await fetch(f"{BASE_FUTURES}/futures/data/openInterestHist", {
@@ -68,6 +68,20 @@ async def get_liquidations(symbol: str, limit: int = 50) -> list:
     except Exception:
         return []
 
+
+async def get_taker_ratio(symbol: str, period: str = "5m", limit: int = 24) -> list:
+    """Taker buy/sell volume ratio — proxy for liquidation pressure.
+    buySellRatio > 1 = more aggressive buying (shorts being squeezed)
+    buySellRatio < 1 = more aggressive selling (longs being liquidated)
+    """
+    data = await fetch(f"{BASE_FUTURES}/futures/data/takerlongshortRatio", {
+        "symbol": symbol, "period": period, "limit": limit
+    })
+    return [{"timestamp": int(d["timestamp"]),
+             "buy_sell_ratio": float(d["buySellRatio"]),
+             "buy_vol": float(d["buyVol"]),
+             "sell_vol": float(d["sellVol"])} for d in data]
+
 async def get_ticker_24h(symbol: str) -> dict:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/ticker/24hr", {"symbol": symbol})
     return {
@@ -88,9 +102,10 @@ async def get_all_market_data(symbol: str) -> dict:
         get_long_short_ratio(symbol, "5m", 50),
         get_ticker_24h(symbol),
         get_klines(symbol, "4h", 210),   # HTF trend — EMA50/200 needs 200+ bars
+        get_taker_ratio(symbol, "5m", 24),  # taker buy/sell pressure (liquidation proxy)
         return_exceptions=True
     )
-    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker", "htf_klines"]
+    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker", "htf_klines", "taker_ratio"]
     out = {}
     for k, v in zip(keys, results):
         if isinstance(v, Exception):

@@ -38,6 +38,74 @@ def _format_duration(opened_at_str: str) -> str:
         return "?"
 
 
+def _analyze_trade_outcome(trade: dict, result: str, duration_mins: float) -> str:
+    """Generate a plain-English explanation of why a trade won or lost."""
+    ind = {}
+    try:
+        raw = trade.get("indicators") or "{}"
+        ind = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception:
+        pass
+
+    direction = trade.get("direction", "LONG")
+    confidence = trade.get("confidence", 0) or 0
+
+    if result == "WIN":
+        drivers = []
+        fr = ind.get("funding_rate_pct", 0) or 0
+        if abs(fr) > 0.05:
+            drivers.append(f"extreme funding ({fr:+.4f}%) — crowded side unwound")
+        tvb = ind.get("taker_vs_baseline", 1.0) or 1.0
+        if tvb > 1.4 and direction == "LONG":
+            drivers.append(f"taker squeeze ({tvb:.1f}x baseline) confirmed buy pressure")
+        elif tvb < 0.7 and direction == "SHORT":
+            drivers.append(f"heavy sell takers ({tvb:.1f}x baseline) confirmed sell pressure")
+        cvd = ind.get("cvd_signal", "")
+        if "confirm" in cvd and "bullish" in cvd and direction == "LONG":
+            drivers.append("CVD confirmed real accumulation")
+        elif "confirm" in cvd and "bearish" in cvd and direction == "SHORT":
+            drivers.append("CVD confirmed real distribution")
+        elif "divergence" in cvd:
+            drivers.append(f"CVD divergence called the reversal correctly")
+        ls = ind.get("ls_momentum", 0) or 0
+        if abs(ls) > 3:
+            drivers.append(f"L/S ratio flipped {ls:+.1f}% in our favour")
+        if drivers:
+            return "Why it won: " + " · ".join(drivers)
+        return "Why it won: all signals aligned and price followed through."
+
+    else:  # LOSS
+        if duration_mins < 20:
+            return (
+                f"Why it lost: stopped out fast ({duration_mins:.0f}m) — "
+                f"confidence was {confidence:.0f}/100, likely entered choppy conditions."
+            )
+        warnings = []
+        tvb = ind.get("taker_vs_baseline", 1.0) or 1.0
+        if tvb < 0.8 and direction == "LONG":
+            warnings.append(f"taker sell pressure at entry ({tvb:.1f}x baseline) — should have been a red flag")
+        elif tvb > 1.2 and direction == "SHORT":
+            warnings.append(f"taker buy pressure at entry ({tvb:.1f}x baseline) — counter-signal was present")
+        cvd = ind.get("cvd_signal", "")
+        if ("bearish" in cvd) and direction == "LONG":
+            warnings.append("CVD was bearish/distributing at entry — divergence ignored")
+        elif ("bullish" in cvd) and direction == "SHORT":
+            warnings.append("CVD was bullish/accumulating at entry — divergence ignored")
+        htf = ind.get("htf_trend", "")
+        if htf == "bearish" and direction == "LONG":
+            warnings.append("entered long against a 4H downtrend")
+        elif htf == "bullish" and direction == "SHORT":
+            warnings.append("entered short against a 4H uptrend")
+        rsi = ind.get("rsi", 50) or 50
+        if rsi > 55 and direction == "LONG":
+            warnings.append(f"RSI was already elevated ({rsi:.0f}) at long entry")
+        elif rsi < 45 and direction == "SHORT":
+            warnings.append(f"RSI was already low ({rsi:.0f}) at short entry")
+        if warnings:
+            return "Why it lost: " + " · ".join(warnings)
+        return f"Why it lost: setup was valid, market reversed after {duration_mins:.0f}m — no clear warning signs at entry."
+
+
 def should_open_trade(signal, symbol: str, config: dict) -> tuple[bool, str]:
     if signal.direction == "NEUTRAL":
         return False, "No signal"
@@ -49,6 +117,8 @@ def should_open_trade(signal, symbol: str, config: dict) -> tuple[bool, str]:
     same_dir = [t for t in open_trades if t["direction"] == signal.direction]
     if same_dir:
         return False, f"Already have open {signal.direction} trade"
+    if db.had_recent_sl(symbol, signal.direction, minutes=30):
+        return False, f"SL cooldown active — skipping {signal.direction} for 30 min"
     return True, "OK"
 
 
@@ -153,6 +223,7 @@ def check_open_positions(current_price: float, symbol: str, klines: list = None)
 
             logger.info(f"Closed #{trade['id']} via {reason} @ {exit_price} | PnL: {pnl_pct:.2f}%")
 
+            outcome_analysis = _analyze_trade_outcome(trade, result, (datetime.utcnow() - datetime.fromisoformat(trade["opened_at"])).total_seconds() / 60)
             send_tg(
                 f"{emoji} <b>OI Bot — {trade['direction']} CLOSED — {result}</b>\n\n"
                 f"<b>{symbol}</b>\n"
@@ -160,7 +231,7 @@ def check_open_positions(current_price: float, symbol: str, klines: list = None)
                 f"💵 PnL: <b>${pnl_usd:+.2f}</b> ({pnl_pct:+.2f}%)  |  ⏱ Held: {duration}\n"
                 f"4H trend at entry: {htf_trend}\n\n"
                 f"<b>Entry reasons:</b>\n{reasons_text}\n\n"
-                f"<b>Outcome:</b> {outcome_note}"
+                f"<b>{outcome_analysis}</b>"
             )
 
             closed.append({"trade_id": trade["id"], "reason": reason, "pnl_pct": pnl_pct})

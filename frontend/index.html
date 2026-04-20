@@ -551,7 +551,7 @@
   </div>
 
   <!-- Charts row -->
-  <div class="grid-2" style="margin-bottom:16px;">
+  <div class="grid-3" style="margin-bottom:16px;">
     <div class="panel">
       <div class="panel-header">
         <span class="panel-title">Price History</span>
@@ -570,6 +570,28 @@
       <div class="panel-body">
         <div class="chart-container">
           <canvas id="oiChart"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Taker Buy / Sell Volume</span>
+        <span style="font-size:10px;color:var(--muted);" id="takerRatioLabel">ratio —</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-container">
+          <canvas id="takerChart"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Funding Rate</span>
+        <span id="fundingBadge" style="font-size:10px;padding:2px 7px;border-radius:4px;font-family:var(--font-mono);font-weight:700;background:var(--surface2);color:var(--muted)">— %</span>
+      </div>
+      <div class="panel-body">
+        <div class="chart-container">
+          <canvas id="fundingChart"></canvas>
         </div>
       </div>
     </div>
@@ -614,6 +636,8 @@ let activeSymbol = null;
 let symbols = [];
 let priceChart = null;
 let oiChart = null;
+let takerChart = null;
+let fundingChart = null;
 let latestIndicators = {};
 
 // ── Chart init ──────────────────────────────────────────────────────────────
@@ -651,6 +675,125 @@ function initCharts() {
     type: 'line',
     data: { labels: [], datasets: [{ data: [], borderColor: '#7b5ea7', borderWidth: 1.5, fill: true, backgroundColor: 'rgba(123,94,167,0.08)', pointRadius: 0, tension: 0.3 }] },
     options: { ...chartDefaults }
+  });
+
+  const takerScaleY = {
+    stacked: true,
+    grid: { color: '#1e2d4a', lineWidth: 0.5 },
+    ticks: { color: '#4a6080', font: { family: 'Space Mono', size: 10 } },
+    border: { display: false }
+  };
+  const takerScaleRatio = {
+    type: 'linear', position: 'right', min: 0, suggestedMax: 2.5,
+    grid: { drawOnChartArea: false },
+    ticks: { color: '#ffd060', font: { family: 'Space Mono', size: 10 }, callback: v => v.toFixed(1) }
+  };
+  const takerScaleCVD = {
+    type: 'linear', position: 'right', offset: true,
+    grid: { drawOnChartArea: false },
+    ticks: { color: '#7b5ea7', font: { family: 'Space Mono', size: 10 },
+      callback: v => v > 0 ? '+' + v.toFixed(0) : v.toFixed(0) }
+  };
+  // ── Funding Rate chart ──────────────────────────────────────────────
+  // Threshold datasets: constant lines across all labels
+  function flatLine(val, labels) { return labels.map(() => val); }
+
+  fundingChart = new Chart(document.getElementById('fundingChart'), {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [
+        // 0: main funding rate line — segment-coloured
+        { label: 'Funding %', data: [], borderWidth: 2, pointRadius: 0, tension: 0.3,
+          fill: 'origin',
+          segment: {
+            borderColor: ctx => {
+              const v = ctx.p0.parsed.y;
+              if (v >  0.008) return '#ff4466';
+              if (v >  0.003) return '#ff9944';
+              if (v < -0.003) return '#00e5a0';
+              if (v < -0.001) return '#44ddaa';
+              return '#4a6080';
+            },
+            backgroundColor: ctx => {
+              const v = ctx.p0.parsed.y;
+              if (v >  0.003) return 'rgba(255,68,102,0.08)';
+              if (v < -0.001) return 'rgba(0,229,160,0.08)';
+              return 'rgba(74,96,128,0.05)';
+            }
+          }
+        },
+        // 1-4: static threshold reference lines
+        { label: 'Bearish extreme (0.08%)', data: [],  borderColor: 'rgba(255,68,102,0.5)',  borderWidth: 1, borderDash: [4,3], pointRadius: 0, fill: false },
+        { label: 'Bearish mild (0.03%)',    data: [],  borderColor: 'rgba(255,153,68,0.4)',  borderWidth: 1, borderDash: [4,3], pointRadius: 0, fill: false },
+        { label: 'Bullish mild (-0.01%)',   data: [],  borderColor: 'rgba(68,221,170,0.4)',  borderWidth: 1, borderDash: [4,3], pointRadius: 0, fill: false },
+        { label: 'Bullish extreme (-0.03%)',data: [],  borderColor: 'rgba(0,229,160,0.5)',   borderWidth: 1, borderDash: [4,3], pointRadius: 0, fill: false },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0d1421', borderColor: '#1e2d4a', borderWidth: 1,
+          titleColor: '#c8d8f0', bodyColor: '#7b9cc0',
+          titleFont: { family: 'Space Mono' }, bodyFont: { family: 'Space Mono', size: 11 },
+          filter: item => item.datasetIndex === 0,
+          callbacks: {
+            label: item => {
+              const v = item.parsed.y;
+              const pct = (v * 100).toFixed(4) + '%';
+              if (v >  0.0008) return `${pct}  ⚠ Bearish extreme — longs being punished, short signal`;
+              if (v >  0.0003) return `${pct}  Bearish mild — elevated long crowding`;
+              if (v < -0.0003) return `${pct}  ⚠ Bullish extreme — shorts being punished, long signal`;
+              if (v < -0.0001) return `${pct}  Bullish mild — elevated short crowding`;
+              return `${pct}  Neutral — no crowding signal`;
+            }
+          }
+        }
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          grid: { color: '#1e2d4a', lineWidth: 0.5 },
+          ticks: {
+            color: '#4a6080', font: { family: 'Space Mono', size: 10 },
+            callback: v => (v * 100).toFixed(3) + '%'
+          },
+          border: { display: false }
+        }
+      }
+    }
+  });
+
+  takerChart = new Chart(document.getElementById('takerChart'), {
+    type: 'bar',
+    data: {
+      labels: [],
+      datasets: [
+        { label: 'Buy Vol',  data: [], backgroundColor: 'rgba(0,229,160,0.5)',  borderWidth: 0, stack: 'vol' },
+        { label: 'Sell Vol', data: [], backgroundColor: 'rgba(255,68,102,0.5)', borderWidth: 0, stack: 'vol' },
+        { label: 'Ratio', data: [], type: 'line', yAxisID: 'ratio',
+          borderColor: '#ffd060', borderWidth: 1.5, pointRadius: 0, tension: 0.3, fill: false },
+        { label: 'CVD', data: [], type: 'line', yAxisID: 'cvd',
+          borderColor: '#7b5ea7', borderWidth: 2, pointRadius: 0, tension: 0.4,
+          fill: false, borderDash: [4, 3] }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: true, labels: { color: '#4a6080', font: { family: 'Space Mono', size: 10 }, boxWidth: 10, padding: 8 } },
+        tooltip: { backgroundColor: '#0d1421', borderColor: '#1e2d4a', borderWidth: 1,
+          titleColor: '#c8d8f0', bodyColor: '#7b9cc0',
+          titleFont: { family: 'Space Mono' }, bodyFont: { family: 'Space Mono', size: 11 } }
+      },
+      scales: { x: { display: false, stacked: true }, y: takerScaleY,
+        ratio: takerScaleRatio, cvd: takerScaleCVD }
+    }
   });
 }
 
@@ -992,6 +1135,67 @@ function renderPriceChart(history) {
     oiChart.data.labels = labels;
     oiChart.data.datasets[0].data = oiData;
     oiChart.update('none');
+  }
+
+  // Taker buy/sell volume + CVD chart
+  const buyVols  = history.map(h => h.buy_vol  || 0);
+  const sellVols = history.map(h => h.sell_vol || 0);
+  const ratios   = history.map(h => h.taker_ratio != null ? parseFloat(h.taker_ratio) : null);
+
+  // Compute CVD (cumulative delta), normalised to start at 0
+  let cvdRunning = 0;
+  const cvdRaw = history.map(h => { cvdRunning += (h.buy_vol || 0) - (h.sell_vol || 0); return cvdRunning; });
+  const cvdBase = cvdRaw[0] || 0;
+  const cvdData = cvdRaw.map(v => parseFloat((v - cvdBase).toFixed(2)));
+
+  if (buyVols.some(Boolean)) {
+    takerChart.data.labels = labels;
+    takerChart.data.datasets[0].data = buyVols;
+    takerChart.data.datasets[1].data = sellVols;
+    takerChart.data.datasets[2].data = ratios;
+    takerChart.data.datasets[3].data = cvdData;
+    takerChart.update('none');
+
+    // Update header label with ratio + CVD direction
+    const lastRatio = ratios.filter(r => r != null).pop();
+    const lastCVD   = cvdData[cvdData.length - 1];
+    const el = document.getElementById('takerRatioLabel');
+    if (el && lastRatio != null) {
+      const ratioColor = lastRatio > 1.2 ? '#00e5a0' : lastRatio < 0.8 ? '#ff4466' : '#ffd060';
+      const cvdArrow   = lastCVD > 0 ? ' ↑CVD' : lastCVD < 0 ? ' ↓CVD' : '';
+      const cvdColor   = lastCVD > 0 ? '#00e5a0' : lastCVD < 0 ? '#ff4466' : '#ffd060';
+      el.innerHTML = `<span style='color:${ratioColor}'>ratio ${lastRatio.toFixed(2)}</span>`
+                   + `<span style='color:${cvdColor};margin-left:8px'>${cvdArrow}</span>`;
+    }
+  }
+
+  // ── Funding rate chart ───────────────────────────────────────────────
+  const fundingVals = history.map(h => h.funding_rate != null ? h.funding_rate : null);
+  const validFunding = fundingVals.filter(v => v != null);
+  if (validFunding.length) {
+    const thresholds = [0.0008, 0.0003, -0.0001, -0.0003];
+    fundingChart.data.labels = labels;
+    fundingChart.data.datasets[0].data = fundingVals;
+    thresholds.forEach((t, i) => {
+      fundingChart.data.datasets[i + 1].data = labels.map(() => t);
+    });
+    fundingChart.update('none');
+
+    // Live badge in panel header
+    const latest = validFunding[validFunding.length - 1];
+    const badge  = document.getElementById('fundingBadge');
+    if (badge) {
+      const pct = (latest * 100).toFixed(4);
+      let bg, color, label;
+      if (latest >  0.0008) { bg = 'rgba(255,68,102,0.2)';  color = '#ff4466'; label = `${pct}% ⚠ SHORT`; }
+      else if (latest >  0.0003) { bg = 'rgba(255,153,68,0.15)'; color = '#ff9944'; label = `${pct}% bearish`; }
+      else if (latest < -0.0003) { bg = 'rgba(0,229,160,0.2)';  color = '#00e5a0'; label = `${pct}% ⚠ LONG`;  }
+      else if (latest < -0.0001) { bg = 'rgba(68,221,170,0.15)'; color = '#44ddaa'; label = `${pct}% bullish`; }
+      else                       { bg = 'var(--surface2)';        color = 'var(--muted)'; label = `${pct}% neutral`; }
+      badge.textContent = label;
+      badge.style.background = bg;
+      badge.style.color = color;
+    }
   }
 }
 

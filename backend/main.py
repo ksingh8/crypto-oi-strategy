@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
-    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(","),
-    "tp_pct": float(os.getenv("TP_PCT", "2.0")),
-    "sl_pct": float(os.getenv("SL_PCT", "0.8")),
-    "min_confidence": float(os.getenv("MIN_CONFIDENCE", "40")),
+    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(","),
+    "tp_pct": float(os.getenv("TP_PCT", "3.0")),
+    "sl_pct": float(os.getenv("SL_PCT", "1.2")),
+    "min_confidence": float(os.getenv("MIN_CONFIDENCE", "65")),
     "position_size_usd": float(os.getenv("POSITION_SIZE_USD", "100")),
     "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL", "5")),
 }
@@ -52,11 +52,16 @@ async def run_strategy_cycle():
 
             # Save snapshot
             ls_ratio = ls_history[-1]["long_short_ratio"] if ls_history else None
+            taker_history = market_data.get("taker_ratio") or []
+            taker_last = taker_history[-1] if taker_history else {}
             db.save_price_snapshot(
                 symbol, current_price,
                 oi=oi.get("oi"),
                 funding_rate=funding.get("funding_rate"),
-                ls_ratio=ls_ratio
+                ls_ratio=ls_ratio,
+                buy_vol=taker_last.get("buy_vol"),
+                sell_vol=taker_last.get("sell_vol"),
+                taker_ratio=taker_last.get("buy_sell_ratio"),
             )
 
             # Check existing positions — pass klines so candle highs/lows catch missed hits
@@ -77,11 +82,31 @@ async def run_strategy_cycle():
             logger.error(f"Error in strategy cycle for {symbol}: {e}", exc_info=True)
 
 
+async def check_positions_only():
+    """Lightweight cycle: only check open positions for TP/SL, no new signals."""
+    for symbol in CONFIG["symbols"]:
+        try:
+            open_trades = db.get_open_trades(symbol)
+            if not open_trades:
+                continue
+            ticker = await bc.get_ticker_24h(symbol)
+            current_price = ticker.get("price", 0)
+            if not current_price:
+                continue
+            klines = await bc.get_klines(symbol, "5m", 10)
+            pt.check_open_positions(current_price, symbol, klines)
+        except Exception as e:
+            logger.warning(f"Position check error [{symbol}]: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Signal generation every 5 min
     scheduler.add_job(run_strategy_cycle, "interval",
                       minutes=CONFIG["signal_interval_minutes"], id="strategy")
+    # Position TP/SL check every 1 min (lightweight — ticker + recent klines only)
+    scheduler.add_job(check_positions_only, "interval", minutes=1, id="pos_check")
     scheduler.start()
     # Run immediately on startup
     asyncio.create_task(run_strategy_cycle())

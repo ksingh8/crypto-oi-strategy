@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS price_history (
     oi REAL,
     funding_rate REAL,
     ls_ratio REAL,
+    buy_vol REAL,
+    sell_vol REAL,
+    taker_ratio REAL,
     timestamp TEXT NOT NULL
 );
 """
@@ -145,12 +148,16 @@ def get_recent_signals(limit: int = 50) -> list:
         return result
 
 def save_price_snapshot(symbol: str, price: float, oi: float = None,
-                        funding_rate: float = None, ls_ratio: float = None):
+                        funding_rate: float = None, ls_ratio: float = None,
+                        buy_vol: float = None, sell_vol: float = None,
+                        taker_ratio: float = None):
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO price_history (symbol, price, oi, funding_rate, ls_ratio, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (symbol, price, oi, funding_rate, ls_ratio, datetime.utcnow().isoformat()))
+            INSERT INTO price_history (symbol, price, oi, funding_rate, ls_ratio,
+                                       buy_vol, sell_vol, taker_ratio, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (symbol, price, oi, funding_rate, ls_ratio,
+              buy_vol, sell_vol, taker_ratio, datetime.utcnow().isoformat()))
 
 def get_stats() -> dict:
     with get_db() as conn:
@@ -188,3 +195,17 @@ def get_price_history(symbol: str, limit: int = 200) -> list:
             SELECT * FROM price_history WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?
         """, (symbol, limit)).fetchall()
         return [dict(r) for r in reversed(rows)]
+
+
+def had_recent_sl(symbol: str, direction: str, minutes: int = 30) -> bool:
+    """True if same symbol+direction was stopped out within the last N minutes."""
+    with get_db() as conn:
+        row = conn.execute(
+            """SELECT COUNT(*) AS c FROM trades
+               WHERE symbol = ? AND direction = ? AND exit_reason = 'SL'
+               AND closed_at >= datetime('now', ?)
+            """,
+            (symbol, direction, f'-{minutes} minutes')
+        ).fetchone()
+        return (row['c'] or 0) > 0
+
