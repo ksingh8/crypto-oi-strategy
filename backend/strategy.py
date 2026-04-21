@@ -387,8 +387,17 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
         reasons.append(f"LS ratio neutral ({ls_sig['ratio']:.2f})")
 
     # 6. Taker pressure (liquidation proxy)
-    taker_signal = taker_sig["signal"]
-    taker_score  = taker_sig["score"]
+    # Taker spikes >= 3.0x have 0% win rate empirically ? someone panic-bought at the top.
+    # Real sustained buying sits in the 1.5-3.0x range (46% WR). Cap at 3.0x.
+    if taker_sig["ratio"] >= 3.0:
+        reasons.append(
+            f"Taker spike IGNORED ? ratio {taker_sig['ratio']:.2f}x >= 3.0 is a pump candle, not sustained pressure"
+        )
+        taker_signal = "neutral"
+        taker_score  = 0
+    else:
+        taker_signal = taker_sig["signal"]
+        taker_score  = taker_sig["score"]
     if taker_signal in ("bullish", "bullish_strong"):
         vol_note = f" (vol spike x{taker_sig['vol_spike']:.1f})" if taker_sig["vol_spike"] > 1.8 else ""
         reasons.append(
@@ -479,9 +488,22 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 f"Quality gate: RSI elevated ({rsi:.0f}) with neutral funding — "
                 f"need funding support to long an extended move"
             )
+        elif 40 <= rsi < 50:
+            long_ok = False
+            reasons.append(
+                f"Quality gate: RSI {rsi:.0f} in dead zone (40-50) "
+                f"-- not oversold enough to bounce, not strong enough to continue"
+            )
 
+    MIN_SHORT_CONFIDENCE = 75  # SHORTs need higher bar -- 13% WR vs 36% for LONGs historically
     if short_ok:
-        if rsi <= 20:
+        if short_score < MIN_SHORT_CONFIDENCE:
+            short_ok = False
+            reasons.append(
+                f"Quality gate: SHORT confidence {short_score:.0f} < {MIN_SHORT_CONFIDENCE} "
+                f"-- shorts need higher conviction (historical SHORT win rate is only 13%)"
+            )
+        elif rsi <= 20:
             short_ok = False
             reasons.append(
                 f"Quality gate: RSI {rsi:.0f} ≤ 20 — price is oversold, not chasing a short here"

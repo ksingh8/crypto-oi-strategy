@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
-    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(","),
+    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(","),  # SOL removed: 0% WR across 8 trades
     "tp_pct": float(os.getenv("TP_PCT", "3.0")),
     "sl_pct": float(os.getenv("SL_PCT", "1.2")),
     "min_confidence": float(os.getenv("MIN_CONFIDENCE", "65")),
@@ -32,7 +32,16 @@ scheduler = AsyncIOScheduler()
 latest_market_data = {}  # in-memory cache
 
 # ── Core loop ───────────────────────────────────────────────────────────────────
+# Hours (UTC) with 0% win rate across 25 trades ? empirically derived
+BAD_HOURS_UTC = {0, 2, 4, 5, 11, 16, 17, 22}
+
 async def run_strategy_cycle():
+    # Time-of-day filter: skip signal generation during known bad hours
+    current_hour = datetime.now(timezone.utc).hour
+    if current_hour in BAD_HOURS_UTC:
+        logger.info(f"[TIME FILTER] Hour {current_hour}h UTC is a known bad hour ? skipping signal cycle")
+        return
+
     for symbol in CONFIG["symbols"]:
         try:
             market_data = await bc.get_all_market_data(symbol)
