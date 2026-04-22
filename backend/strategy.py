@@ -71,6 +71,8 @@ def calculate_oi_momentum(oi_history: list[dict], lookback: int = 10) -> dict:
     if not oi_history or len(oi_history) < lookback:
         return {"roc": 0, "trend": "flat", "acceleration": 0}
     recent = [x["oi"] for x in oi_history[-lookback:]]
+    if not recent[0] or not recent[len(recent) // 2]:  # guard against zero OI values
+        return {"roc": 0, "trend": "flat", "acceleration": 0}
     roc = (recent[-1] - recent[0]) / recent[0] * 100
     mid = len(recent) // 2
     first_half_roc = (recent[mid] - recent[0]) / recent[0] * 100
