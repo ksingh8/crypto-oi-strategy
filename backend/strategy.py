@@ -496,6 +496,12 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 f"Quality gate: RSI {rsi:.0f} in dead zone (40-50) "
                 f"-- not oversold enough to bounce, not strong enough to continue"
             )
+        elif taker_sig["ratio"] < 1.3:
+            long_ok = False
+            reasons.append(
+                f"Quality gate: taker ratio {taker_sig['ratio']:.2f} < 1.3 — "
+                f"no real buyers yet, not entering a falling knife"
+            )
 
     MIN_SHORT_CONFIDENCE = 75  # SHORTs need higher bar -- 13% WR vs 36% for LONGs historically
     if short_ok:
