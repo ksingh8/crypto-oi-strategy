@@ -39,8 +39,10 @@ async def run_strategy_cycle():
     # Time-of-day filter: skip signal generation during known bad hours
     current_hour = datetime.now(timezone.utc).hour
     if current_hour in BAD_HOURS_UTC:
-        logger.info(f"[TIME FILTER] Hour {current_hour}h UTC is a known bad hour ? skipping signal cycle")
+        logger.info(f"[TIME FILTER] Hour {current_hour}h UTC is a known bad hour — skipping signal cycle")
         return
+
+    btc_htf_klines_cache = []  # BTC macro filter: cache BTC 4H klines for alt coins (#5)
 
     for symbol in CONFIG["symbols"]:
         try:
@@ -58,6 +60,12 @@ async def run_strategy_cycle():
             current_price = ticker.get("price", 0)
             if not current_price:
                 continue
+
+            # BTC macro filter (#5): cache BTC 4H klines; inject into alt market_data
+            if symbol == "BTCUSDT":
+                btc_htf_klines_cache = market_data.get("htf_klines") or []
+            elif symbol not in ("ETHUSDT",) and btc_htf_klines_cache:
+                market_data["btc_htf_klines"] = btc_htf_klines_cache
 
             # Save snapshot
             ls_ratio = ls_history[-1]["long_short_ratio"] if ls_history else None

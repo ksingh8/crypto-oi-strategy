@@ -502,7 +502,33 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 f"Quality gate: taker ratio {taker_sig['ratio']:.2f} < 1.3 — "
                 f"no real buyers yet, not entering a falling knife"
             )
+        elif klines and klines[-1]["close"] <= klines[-1]["open"]:
+            long_ok = False
+            reasons.append(
+                f"Quality gate: confirmation candle failed — last bar is red "
+                f"(close {klines[-1]['close']:.2f} <= open {klines[-1]['open']:.2f}), "
+                f"price still falling, waiting for green close"
+            )
 
+    # ── BTC macro filter for alt coins ────────────────────────────────────────
+    # Block alt LONGs when BTC 4H trend is bearish (EMA50 < EMA200).
+    # Alts bleed in BTC downtrends regardless of their own signals.
+    # btc_htf_klines is injected by main.py for non-BTC/ETH symbols only.
+    btc_htf_klines = market_data.get("btc_htf_klines") or []
+    if long_ok and btc_htf_klines:
+        btc_htf = get_htf_trend(btc_htf_klines)
+        if btc_htf["trend"] == "bearish":
+            long_ok = False
+            reasons.append(
+                f"Quality gate: BTC macro filter — BTC 4H bearish "
+                f"(EMA50={btc_htf['ema50']:.0f} < EMA200={btc_htf['ema200']:.0f}), "
+                f"blocking alt LONG"
+            )
+
+    # ── SHORTs disabled ────────────────────────────────────────────────────────
+    # Historical SHORT win rate = 13% (3 wins / 22 trades). Strategy is LONG-only.
+    # Keeping the scoring logic intact so confidence numbers are still accurate,
+    # but no SHORT trade will ever be opened.
     MIN_SHORT_CONFIDENCE = 75  # SHORTs need higher bar -- 13% WR vs 36% for LONGs historically
     if short_ok:
         if short_score < MIN_SHORT_CONFIDENCE:
@@ -523,6 +549,13 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 f"need funding support to short an oversold move"
             )
 
+    # Hard block — strategy is LONG-only (SHORT WR = 13% historically)
+    if short_ok:
+        short_ok = False
+        reasons.append(
+            f"Quality gate: SHORTs disabled — strategy is LONG-only "
+            f"(historical SHORT WR 13%, 3/22 trades). Re-enable only with new evidence."
+        )
 
     if long_ok:
         direction  = "LONG"
