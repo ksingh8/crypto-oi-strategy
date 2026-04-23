@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
-    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(","),  # SOL removed: 0% WR across 8 trades
+    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,AVAXUSDT,LTCUSDT").split(","),  # AVAX+LTC added for paper trial 2026-04-23
     "tp_pct": float(os.getenv("TP_PCT", "3.0")),
     "sl_pct": float(os.getenv("SL_PCT", "1.2")),
     "min_confidence": float(os.getenv("MIN_CONFIDENCE", "65")),
