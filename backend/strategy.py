@@ -490,11 +490,17 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                 f"Quality gate: RSI elevated ({rsi:.0f}) with neutral funding — "
                 f"need funding support to long an extended move"
             )
-        elif 40 <= rsi < 50:
+        elif 40 <= rsi < 55:
             long_ok = False
             reasons.append(
-                f"Quality gate: RSI {rsi:.0f} in dead zone (40-50) "
+                f"Quality gate: RSI {rsi:.0f} in dead zone (40-55) "
                 f"-- not oversold enough to bounce, not strong enough to continue"
+            )
+        elif oi_mom["trend"] == "falling":
+            long_ok = False
+            reasons.append(
+                f"Quality gate: OI falling ({oi_mom['roc']:.2f}%) — "
+                f"positions unwinding, not a clean long entry"
             )
         elif taker_sig["ratio"] < 1.3:
             long_ok = False
