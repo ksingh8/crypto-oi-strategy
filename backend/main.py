@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
-    "symbols": os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,AVAXUSDT,LTCUSDT").split(","),  # AVAX+LTC added for paper trial 2026-04-23
+    "symbols": os.getenv("SYMBOLS", "ETHUSDT,AVAXUSDT,LTCUSDT").split(","),  # BTC removed 2026-04-25: 23.3% WR below 28.6% break-even across 30 trades
     "tp_pct": float(os.getenv("TP_PCT", "3.0")),
     "sl_pct": float(os.getenv("SL_PCT", "1.2")),
     "min_confidence": float(os.getenv("MIN_CONFIDENCE", "65")),
@@ -42,7 +42,13 @@ async def run_strategy_cycle():
         logger.info(f"[TIME FILTER] Hour {current_hour}h UTC is a known bad hour — skipping signal cycle")
         return
 
-    btc_htf_klines_cache = []  # BTC macro filter: cache BTC 4H klines for alt coins (#5)
+    # BTC macro filter: fetch BTC 4H klines once for AVAX/LTC (BTC no longer traded)
+    try:
+        btc_market_data = await bc.get_all_market_data("BTCUSDT")
+        btc_htf_klines_cache = btc_market_data.get("htf_klines") or []
+    except Exception as e:
+        logger.warning(f"BTC htf fetch failed: {e}")
+        btc_htf_klines_cache = []
 
     for symbol in CONFIG["symbols"]:
         try:
@@ -61,10 +67,8 @@ async def run_strategy_cycle():
             if not current_price:
                 continue
 
-            # BTC macro filter (#5): cache BTC 4H klines; inject into alt market_data
-            if symbol == "BTCUSDT":
-                btc_htf_klines_cache = market_data.get("htf_klines") or []
-            elif symbol not in ("ETHUSDT",) and btc_htf_klines_cache:
+            # BTC macro filter (#5): inject pre-fetched BTC 4H klines into alt market_data
+            if symbol not in ("ETHUSDT",) and btc_htf_klines_cache:
                 market_data["btc_htf_klines"] = btc_htf_klines_cache
 
             # Save snapshot
