@@ -23,7 +23,7 @@ CONFIG = {
     "symbols":               os.getenv("SYMBOLS", "ETHUSDT,AVAXUSDT,LTCUSDT").split(","),
     "tp_pct":                float(os.getenv("TP_PCT",            "3.0")),   # kept for reference; TP is now dynamic
     "sl_pct":                float(os.getenv("SL_PCT",            "1.2")),   # kept for reference; SL is now dynamic
-    "min_confidence":        float(os.getenv("MIN_CONFIDENCE",    "65")),
+    "min_confidence":        float(os.getenv("MIN_CONFIDENCE",    "75")),
     "position_size_usd":     float(os.getenv("POSITION_SIZE_USD", "100")),
     "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL",  "5")),
     "strategy_version":      "v2_sr",

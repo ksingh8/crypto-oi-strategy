@@ -192,6 +192,25 @@ def calculate_delta_signal(taker_history: list, klines: list) -> dict:
     return {'signal': signal, 'cvd': round(cvd_series[-1], 2),
             'cvd_slope': round(cvd_slope, 2), 'score': score}
 
+def calc_ema(data: list, period: int) -> float:
+    if len(data) < period:
+        return data[-1] if data else 0.0
+    k = 2 / (period + 1)
+    ema = data[0]
+    for v in data[1:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+def get_htf_trend(htf_klines: list) -> dict:
+    """4H EMA50 vs EMA200 trend direction."""
+    if not htf_klines or len(htf_klines) < 50:
+        return {'trend': 'neutral', 'ema50': 0.0, 'ema200': 0.0}
+    closes = [k['close'] for k in htf_klines]
+    ema50  = calc_ema(closes, 50)
+    ema200 = calc_ema(closes, 200) if len(closes) >= 200 else calc_ema(closes, len(closes))
+    trend  = 'bullish' if ema50 > ema200 else 'bearish'
+    return {'trend': trend, 'ema50': round(ema50, 4), 'ema200': round(ema200, 4)}
+
 
 def generate_signal(market_data: dict, config: dict) -> Signal:
     """
@@ -265,9 +284,25 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     reasons.append(f"Liquidity sweep confirmed — wick to {sweep['sweep_wick']:.4f} "
                    f"({sweep['bars_ago']} bars ago), price reclaimed level")
 
-    # ── 4. Confirmations ──────────────────────────────────────────────────────
+    # ── 4. HTF trend filter ───────────────────────────────────────────────────
     direction = 'LONG' if level_type == 'support' else 'SHORT'
-    score     = 50   # base: at level + sweep confirmed
+
+    htf = get_htf_trend(htf_klines)
+    indicators.update({'htf_trend': htf['trend'], 'htf_ema50': htf['ema50'],
+                       'htf_ema200': htf['ema200']})
+
+    if direction == 'LONG' and htf['trend'] == 'bearish':
+        reasons.append(f"HTF blocked: 4H bearish (EMA50={htf['ema50']:.2f} < EMA200={htf['ema200']:.2f}) — no LONGs in downtrend")
+        return Signal('NEUTRAL', 0, current_price, 0, 0, reasons, indicators)
+    elif direction == 'SHORT' and htf['trend'] == 'bullish':
+        reasons.append(f"HTF blocked: 4H bullish (EMA50={htf['ema50']:.2f} > EMA200={htf['ema200']:.2f}) — no SHORTs in uptrend")
+        return Signal('NEUTRAL', 0, current_price, 0, 0, reasons, indicators)
+
+    reasons.append(f"4H trend: {htf['trend'].upper()} — aligned with {direction} (EMA50={htf['ema50']:.2f} vs EMA200={htf['ema200']:.2f})")
+
+    # ── 5. Confirmations (need >= 2 of 3: OB + CVD + taker) ──────────────────
+    score         = 50   # base: at level + sweep + HTF aligned
+    confirmations = 0    # must reach >= 2 to trade
 
     # Order book imbalance
     ob = calc_orderbook_imbalance(orderbook)
@@ -280,14 +315,15 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
     if ob_confirms:
         pts = 25 if 'strong' in ob['signal'] else 15
         score += pts
-        reasons.append(f"Order book {'bullish' if direction=='LONG' else 'bearish'} — "
+        confirmations += 1
+        reasons.append(f"OB {'bullish' if direction=='LONG' else 'bearish'}: "
                        f"imbalance {ob['imbalance']:+.2f} "
-                       f"(bids  vs asks )")
+                       f"(bids ${ob['bid_usd']:,.0f} vs asks ${ob['ask_usd']:,.0f})")
     elif ob_opposes:
         score -= 15
-        reasons.append(f"Order book opposing — imbalance {ob['imbalance']:+.2f} against {direction}")
+        reasons.append(f"OB opposing: imbalance {ob['imbalance']:+.2f} against {direction}")
     else:
-        reasons.append(f"Order book neutral — imbalance {ob['imbalance']:+.2f}")
+        reasons.append(f"OB neutral: imbalance {ob['imbalance']:+.2f}")
 
     # CVD / Delta
     delta = calculate_delta_signal(taker_history, klines_5m)
@@ -297,28 +333,44 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
                      (direction == 'SHORT' and 'bearish' in delta['signal'])
     if delta_confirms:
         score += delta['score']
-        kind = 'confirming' if 'confirm' in delta['signal'] else 'divergence'
-        reasons.append(f"CVD {kind} {direction.lower()} — slope {delta['cvd_slope']:+.0f}")
+        confirmations += 1
+        kind = 'confirm' if 'confirm' in delta['signal'] else 'divergence'
+        reasons.append(f"CVD {kind}: slope {delta['cvd_slope']:+.0f} supporting {direction}")
     else:
-        reasons.append(f"CVD not confirming — slope {delta['cvd_slope']:+.0f}")
+        reasons.append(f"CVD not confirming: slope {delta['cvd_slope']:+.0f}")
 
-    # Taker ratio
+    # Taker ratio — confirming adds pts, opposing subtracts
     taker_ratio = taker_history[-1].get('buy_sell_ratio', 1.0) if taker_history else 1.0
     indicators['taker_ratio'] = taker_ratio
     if direction == 'LONG' and taker_ratio >= 1.3:
         score += 10
-        reasons.append(f"Taker buyers active — {taker_ratio:.2f}x")
+        confirmations += 1
+        reasons.append(f"Taker buyers active: {taker_ratio:.2f}x")
     elif direction == 'SHORT' and taker_ratio <= 0.75:
         score += 10
-        reasons.append(f"Taker sellers active — {taker_ratio:.2f}x")
+        confirmations += 1
+        reasons.append(f"Taker sellers active: {taker_ratio:.2f}x")
+    elif direction == 'LONG' and taker_ratio < 0.85:
+        score -= 15
+        reasons.append(f"Taker opposing LONG: sellers active at {taker_ratio:.2f}x")
+    elif direction == 'SHORT' and taker_ratio > 1.15:
+        score -= 15
+        reasons.append(f"Taker opposing SHORT: buyers active at {taker_ratio:.2f}x")
     else:
-        reasons.append(f"Taker neutral — {taker_ratio:.2f}x")
+        reasons.append(f"Taker neutral: {taker_ratio:.2f}x")
 
-    indicators['score'] = score
-    min_confidence = config.get('min_confidence', 65)
+    indicators['score']         = score
+    indicators['confirmations'] = confirmations
+    min_confidence = config.get('min_confidence', 75)
 
+    # Gate 1: need >= 2 of 3 signals confirming
+    if confirmations < 2:
+        reasons.append(f"Only {confirmations}/3 signals confirming — need OB+CVD, OB+taker, or CVD+taker")
+        return Signal('NEUTRAL', score, current_price, 0, 0, reasons, indicators)
+
+    # Gate 2: score threshold
     if score < min_confidence:
-        reasons.append(f"Score {score} < minimum {min_confidence} — not enough confirmation at level")
+        reasons.append(f"Score {score} < {min_confidence} — not enough conviction")
         return Signal('NEUTRAL', score, current_price, 0, 0, reasons, indicators)
 
     # ── 5. Dynamic SL / TP ────────────────────────────────────────────────────
