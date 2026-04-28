@@ -133,8 +133,11 @@ def get_signals(limit: int = 50, v: str = Query(default="v2_sr")):
     return db.get_recent_signals(limit, strategy_version=version)
 
 @app.get("/api/open-trades")
-def get_open_trades():
-    return db.get_open_trades()
+def get_open_trades(v: str = Query(default="v2_sr")):
+    all_open = db.get_open_trades()
+    if v and v != "all":
+        all_open = [t for t in all_open if t.get("strategy_version") == v]
+    return all_open
 
 @app.get("/api/price-history/{symbol}")
 def price_history(symbol: str, limit: int = 200):
