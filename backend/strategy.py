@@ -1,34 +1,32 @@
-"""
-OI-Based Futures Strategy
--------------------------
-Signal generation logic combining:
-1. OI momentum (rate of change)
-2. Funding rate extremes
-3. RSI (momentum confirmation)
-4. Long/Short ratio divergence
-5. 4H HTF trend filter (NEW) — only trade in direction of higher timeframe trend
-6. Min 2-signal confluence (NEW) — require at least 2 distinct signals agreeing
+﻿"""
+S/R + Order Flow Strategy v2
+-----------------------------
+Entry based on:
+1. Price at 4H support/resistance level (pivot highs/lows)
+2. Liquidity sweep confirmed on 15m (price swept through level and reclaimed)
+3. Order book depth imbalance (who is in control at this level)
+4. Delta / CVD confirmation
 
-Entry conditions:
-  LONG:  4H bullish + OI/funding/RSI/LS at least 2 signals pointing long + score >= 40
-  SHORT: 4H bearish + OI/funding/RSI/LS at least 2 signals pointing short + score >= 40
-
-TP: 3.0% | SL: 1.2% | R:R: 2.5:1
+SL: below sweep wick (LONG) or above sweep wick (SHORT) + 0.15% buffer, capped at 2%
+TP: 2.5:1 R:R from SL distance
 """
 
-import statistics
 from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class Signal:
     direction: str          # "LONG" | "SHORT" | "NEUTRAL"
-    confidence: float       # 0-100
+    confidence: float
     entry_price: float
     tp_price: float
     sl_price: float
-    reasons: list[str]
+    reasons: list
     indicators: dict
     timestamp: datetime = None
 
@@ -37,565 +35,324 @@ class Signal:
             self.timestamp = datetime.utcnow()
 
 
-def calculate_rsi(closes: list[float], period: int = 14) -> float:
-    if len(closes) < period + 1:
-        return 50.0
-    deltas = [closes[i] - closes[i-1] for i in range(1, len(closes))]
-    gains  = [max(d, 0) for d in deltas]
-    losses = [max(-d, 0) for d in deltas]
-    # Seed with simple average over first period
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    # Wilder's smoothing for remaining bars
-    for g, l in zip(gains[period:], losses[period:]):
-        avg_gain = (avg_gain * (period - 1) + g) / period
-        avg_loss = (avg_loss * (period - 1) + l) / period
-    if avg_loss == 0:
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-def calc_ema(data: list[float], period: int) -> float:
-    """Compute EMA for a list of closing prices, return final value."""
-    if len(data) < period:
-        return data[-1] if data else 0
-    k = 2 / (period + 1)
-    ema = data[0]
-    for v in data[1:]:
-        ema = v * k + ema * (1 - k)
-    return ema
-
-
-def calculate_oi_momentum(oi_history: list[dict], lookback: int = 10) -> dict:
-    if not oi_history or len(oi_history) < lookback:
-        return {"roc": 0, "trend": "flat", "acceleration": 0}
-    recent = [x["oi"] for x in oi_history[-lookback:]]
-    if not recent[0] or not recent[len(recent) // 2]:  # guard against zero OI values
-        return {"roc": 0, "trend": "flat", "acceleration": 0}
-    roc = (recent[-1] - recent[0]) / recent[0] * 100
-    mid = len(recent) // 2
-    first_half_roc = (recent[mid] - recent[0]) / recent[0] * 100
-    second_half_roc = (recent[-1] - recent[mid]) / recent[mid] * 100
-    acceleration = second_half_roc - first_half_roc
-    trend = "rising" if roc > 0.3 else "falling" if roc < -0.3 else "flat"
-    return {"roc": roc, "trend": trend, "acceleration": acceleration}
-
-
-def calculate_funding_signal(funding_rate: float) -> dict:
-    rate_pct = funding_rate * 100
-    if rate_pct > 0.08:
-        signal = "bearish_extreme"
-        score = min((rate_pct - 0.05) / 0.05 * 50, 50)
-    elif rate_pct > 0.03:
-        signal = "bearish_mild"
-        score = 20
-    elif rate_pct < -0.03:
-        signal = "bullish_extreme"
-        score = -min((abs(rate_pct) - 0.02) / 0.03 * 50, 50)
-    elif rate_pct < -0.01:
-        signal = "bullish_mild"
-        score = -20
-    else:
-        signal = "neutral"
-        score = 0
-    return {"signal": signal, "score": score, "rate_pct": rate_pct}
-
-
-def calculate_ls_signal(ls_history: list[dict], lookback: int = 6) -> dict:
-    if not ls_history or len(ls_history) < lookback:
-        return {"signal": "neutral", "ratio": 1.0, "momentum": 0}
-    recent = [x["long_short_ratio"] for x in ls_history[-lookback:]]
-    current_ratio = recent[-1]
-    momentum = (recent[-1] - recent[0]) / recent[0] * 100
-    if momentum > 3:
-        signal = "bullish"
-    elif momentum < -3:
-        signal = "bearish"
-    else:
-        signal = "neutral"
-    return {"signal": signal, "ratio": current_ratio, "momentum": momentum}
-
-
-
-def calculate_taker_pressure_signal(taker_history: list, lookback: int = 6) -> dict:
+def find_sr_levels(htf_klines: list, pivot_strength: int = 3, max_levels: int = 15) -> list:
     """
-    Detect aggressive taker pressure as a liquidation proxy.
-    buySellRatio >> 1  → shorts being squeezed (bullish)
-    buySellRatio << 1  → longs being liquidated (bearish)
-    Compares recent bars to their own baseline to catch spikes.
+    Find S/R levels from 4H klines using pivot high/low method.
+    Clusters levels within 0.5% of each other (keeps most recent).
+    Returns list sorted by recency (most recent first).
     """
-    if not taker_history or len(taker_history) < 3:
-        return {"signal": "neutral", "ratio": 1.0, "ratio_vs_baseline": 1.0,
-                "buy_vol": 0, "sell_vol": 0, "score": 0}
+    if not htf_klines or len(htf_klines) < pivot_strength * 2 + 2:
+        return []
 
-    recent  = taker_history[-lookback:]
-    current = recent[-1]
-    baseline_ratios = [b["buy_sell_ratio"] for b in taker_history[:-lookback]] or [1.0]
-    baseline_avg = sum(baseline_ratios) / len(baseline_ratios)
+    levels = []
+    n = len(htf_klines)
+    for i in range(pivot_strength, n - pivot_strength):
+        bar = htf_klines[i]
+        # Pivot high = resistance
+        is_pivot_high = all(
+            bar['high'] >= htf_klines[j]['high']
+            for j in range(i - pivot_strength, i + pivot_strength + 1) if j != i
+        )
+        if is_pivot_high:
+            levels.append({'price': bar['high'], 'type': 'resistance', 'index': i, 'strength': 1})
+        # Pivot low = support
+        is_pivot_low = all(
+            bar['low'] <= htf_klines[j]['low']
+            for j in range(i - pivot_strength, i + pivot_strength + 1) if j != i
+        )
+        if is_pivot_low:
+            levels.append({'price': bar['low'], 'type': 'support', 'index': i, 'strength': 1})
 
-    ratio = current["buy_sell_ratio"]
-    ratio_vs_baseline = ratio / baseline_avg if baseline_avg > 0 else 1.0
+    # Cluster levels within 0.5% — keep most recent, count touches as strength
+    clustered = []
+    for lvl in reversed(levels):  # most recent first
+        nearby = [c for c in clustered if abs(c['price'] - lvl['price']) / lvl['price'] < 0.005]
+        if nearby:
+            nearby[0]['strength'] += 1
+        else:
+            clustered.append(dict(lvl))
 
-    # Recent trend: is pressure accelerating?
-    recent_avg = sum(b["buy_sell_ratio"] for b in recent) / len(recent)
+    clustered.sort(key=lambda x: x['index'], reverse=True)
+    return clustered[:max_levels]
 
-    # Volume spike: is this bar unusually active?
-    all_vols = [b["buy_vol"] + b["sell_vol"] for b in taker_history]
-    avg_vol  = sum(all_vols) / len(all_vols)
-    cur_vol  = current["buy_vol"] + current["sell_vol"]
-    vol_spike = cur_vol / avg_vol if avg_vol > 0 else 1.0
 
-    # Score: based on how extreme the ratio is vs baseline + volume confirmation
-    score = 0
-    if ratio_vs_baseline > 1.8 and ratio > 1.4:      # strong short squeeze
-        score = 30
-        signal = "bullish_strong"
-    elif ratio_vs_baseline > 1.4 or ratio > 1.5:     # moderate short squeeze
-        score = 18
-        signal = "bullish"
-    elif ratio_vs_baseline < 0.55 and ratio < 0.7:   # strong long liquidation
-        score = 30
-        signal = "bearish_strong"
-    elif ratio_vs_baseline < 0.7 or ratio < 0.65:    # moderate long liquidation
-        score = 18
-        signal = "bearish"
-    else:
-        score = 0
-        signal = "neutral"
+def find_nearest_level(sr_levels: list, price: float, proximity_pct: float = 0.4) -> Optional[dict]:
+    """Return the nearest S/R level within proximity_pct of current price, or None."""
+    if not sr_levels:
+        return None
+    best, best_dist = None, float('inf')
+    for lvl in sr_levels:
+        dist = abs(lvl['price'] - price) / price * 100
+        if dist <= proximity_pct and dist < best_dist:
+            best_dist = dist
+            best = lvl
+    return best
 
-    # Boost score if accompanied by a volume spike (more conviction)
-    if vol_spike > 1.8 and signal != "neutral":
-        score = min(score + 10, 40)
+
+def detect_sweep(klines_15m: list, level_price: float, level_type: str,
+                 sweep_pct: float = 0.1, lookback: int = 4) -> dict:
+    """
+    Detect liquidity sweep + retest on 15m.
+
+    Support sweep (LONG setup):
+      - Any of last N bars had low below level by >= sweep_pct%
+      - Current bar closed back ABOVE level with a green close
+    Resistance sweep (SHORT setup):
+      - Any of last N bars had high above level by >= sweep_pct%
+      - Current bar closed back BELOW level with a red close
+    """
+    empty = {'swept': False, 'retest': False, 'sweep_wick': level_price, 'bars_ago': 0}
+    if not klines_15m or len(klines_15m) < lookback + 2:
+        return empty
+
+    current = klines_15m[-1]
+    prior   = klines_15m[-(lookback + 1):-1]   # last N bars before current
+
+    if level_type == 'support':
+        swept, sweep_wick, bars_ago = False, level_price, 0
+        for i, bar in enumerate(reversed(prior)):
+            if bar['low'] < level_price * (1 - sweep_pct / 100):
+                swept, sweep_wick, bars_ago = True, bar['low'], i + 1
+                break
+        retest = (current['close'] > level_price and current['close'] > current['open'])
+        return {'swept': swept, 'retest': retest, 'sweep_wick': sweep_wick, 'bars_ago': bars_ago}
+
+    else:  # resistance
+        swept, sweep_wick, bars_ago = False, level_price, 0
+        for i, bar in enumerate(reversed(prior)):
+            if bar['high'] > level_price * (1 + sweep_pct / 100):
+                swept, sweep_wick, bars_ago = True, bar['high'], i + 1
+                break
+        retest = (current['close'] < level_price and current['close'] < current['open'])
+        return {'swept': swept, 'retest': retest, 'sweep_wick': sweep_wick, 'bars_ago': bars_ago}
+
+
+def calc_orderbook_imbalance(orderbook: dict, depth_levels: int = 20) -> dict:
+    """
+    Bid/ask depth imbalance — who is in control at this level.
+    imbalance in [-1, 1]: positive = more bids (buyers), negative = more asks (sellers)
+    """
+    if not orderbook:
+        return {'imbalance': 0.0, 'bid_usd': 0.0, 'ask_usd': 0.0, 'signal': 'neutral'}
+
+    bids = orderbook.get('bids', [])[:depth_levels]
+    asks = orderbook.get('asks', [])[:depth_levels]
+    bid_usd = sum(float(p) * float(q) for p, q in bids)
+    ask_usd = sum(float(p) * float(q) for p, q in asks)
+    total   = bid_usd + ask_usd
+    if total == 0:
+        return {'imbalance': 0.0, 'bid_usd': 0.0, 'ask_usd': 0.0, 'signal': 'neutral'}
+
+    imbalance = (bid_usd - ask_usd) / total
+    if   imbalance >  0.20: signal = 'bullish_strong'
+    elif imbalance >  0.10: signal = 'bullish'
+    elif imbalance < -0.20: signal = 'bearish_strong'
+    elif imbalance < -0.10: signal = 'bearish'
+    else:                   signal = 'neutral'
 
     return {
-        "signal": signal,
-        "ratio": round(ratio, 3),
-        "ratio_vs_baseline": round(ratio_vs_baseline, 2),
-        "buy_vol": round(current["buy_vol"], 1),
-        "sell_vol": round(current["sell_vol"], 1),
-        "vol_spike": round(vol_spike, 2),
-        "score": score,
+        'imbalance': round(imbalance, 3),
+        'bid_usd':   round(bid_usd, 0),
+        'ask_usd':   round(ask_usd, 0),
+        'signal':    signal
     }
 
 
 def calculate_delta_signal(taker_history: list, klines: list) -> dict:
-    """
-    Compute per-bar delta (buy_vol - sell_vol) and Cumulative Volume Delta (CVD).
-    CVD rising + price rising   = bullish confirmation (new money, real buying)
-    CVD falling + price falling = bearish confirmation (real selling)
-    CVD rising + price falling  = bullish divergence   (accumulation, potential reversal up)
-    CVD falling + price rising  = bearish divergence   (distribution, potential reversal down)
-    """
+    """CVD / cumulative delta signal."""
     if not taker_history or len(taker_history) < 6:
-        return {"signal": "neutral", "delta_last": 0, "cvd": 0,
-                "cvd_slope": 0, "divergence": False, "score": 0}
+        return {'signal': 'neutral', 'cvd': 0, 'cvd_slope': 0, 'score': 0}
 
-    # Per-bar delta
-    deltas = [b["buy_vol"] - b["sell_vol"] for b in taker_history]
-
-    # Rolling CVD over available window
+    deltas     = [b['buy_vol'] - b['sell_vol'] for b in taker_history]
+    running    = 0.0
     cvd_series = []
-    running = 0.0
     for d in deltas:
         running += d
         cvd_series.append(running)
-
-    # Normalise so CVD starts at 0 in this window
-    baseline = cvd_series[0]
+    baseline   = cvd_series[0]
     cvd_series = [v - baseline for v in cvd_series]
 
-    # Slope over last 6 bars (~30 min)
-    lookback = min(6, len(cvd_series))
-    cvd_recent_slope = cvd_series[-1] - cvd_series[-lookback]
-
-    # Price slope over same period
+    lookback   = min(6, len(cvd_series))
+    cvd_slope  = cvd_series[-1] - cvd_series[-lookback]
     price_slope = 0.0
     if klines and len(klines) >= lookback:
-        price_slope = klines[-1]["close"] - klines[-lookback]["close"]
+        price_slope = klines[-1]['close'] - klines[-lookback]['close']
 
-    cvd_rising   = cvd_recent_slope > 0
+    cvd_rising   = cvd_slope   > 0
     price_rising = price_slope > 0
     divergence   = cvd_rising != price_rising
 
     if not divergence:
-        if cvd_rising:
-            signal = "bullish_confirm"
-            score  = 22
-        else:
-            signal = "bearish_confirm"
-            score  = 22
+        signal = 'bullish_confirm' if cvd_rising else 'bearish_confirm'
+        score  = 15
     else:
-        if cvd_rising:          # CVD up, price down → accumulation
-            signal = "bullish_divergence"
-            score  = 16
-        else:                   # CVD down, price up → distribution
-            signal = "bearish_divergence"
-            score  = 16
+        signal = 'bullish_divergence' if cvd_rising else 'bearish_divergence'
+        score  = 8
 
-    return {
-        "signal":        signal,
-        "delta_last":    round(deltas[-1], 2),
-        "cvd":           round(cvd_series[-1], 2),
-        "cvd_slope":     round(cvd_recent_slope, 2),
-        "divergence":    divergence,
-        "score":         score,
-    }
-
-def get_htf_trend(htf_klines: list[dict]) -> dict:
-    """Compute 4H trend using EMA50 vs EMA200."""
-    if not htf_klines or len(htf_klines) < 50:
-        return {"trend": "neutral", "ema50": 0, "ema200": 0}
-    closes = [k["close"] for k in htf_klines]
-    ema50  = calc_ema(closes, 50)
-    ema200 = calc_ema(closes, 200) if len(closes) >= 200 else calc_ema(closes, len(closes))
-    trend = "bullish" if ema50 > ema200 else "bearish"
-    return {"trend": trend, "ema50": round(ema50, 2), "ema200": round(ema200, 2)}
+    return {'signal': signal, 'cvd': round(cvd_series[-1], 2),
+            'cvd_slope': round(cvd_slope, 2), 'score': score}
 
 
 def generate_signal(market_data: dict, config: dict) -> Signal:
     """
-    Main signal generator. Returns a Signal object.
-    Includes 4H HTF trend filter and minimum 2-signal confluence requirement.
+    S/R + Order Flow signal generator (v2).
+
+    Flow:
+      1. Build S/R map from 4H klines (pivot highs/lows, clustered)
+      2. Check if current price is within 0.4% of any level
+      3. Confirm liquidity sweep + retest on 15m
+      4. Score: order book imbalance + CVD delta + taker ratio
+      5. Dynamic SL at sweep wick, TP at 2.5:1 R:R
     """
-    tp_pct = config.get("tp_pct", 3.0)   # Updated: 3.0% TP — wider target, same 2.5:1 R:R
-    sl_pct = config.get("sl_pct", 1.2)   # Updated: 1.2% SL — avoids noise-stops on swings
+    klines_5m     = market_data.get('klines')     or []
+    klines_15m    = market_data.get('klines_15m') or []
+    htf_klines    = market_data.get('htf_klines') or []
+    orderbook     = market_data.get('orderbook')  or {}
+    taker_history = market_data.get('taker_ratio') or []
+    ticker        = market_data.get('ticker')     or {}
 
-    klines      = market_data.get("klines") or []
-    htf_klines  = market_data.get("htf_klines") or []
-    oi_history  = market_data.get("oi_history") or []
-    funding     = market_data.get("funding") or {}
-    ls_history  = market_data.get("ls_ratio") or []
-    ticker      = market_data.get("ticker") or {}
-
-    taker_history = market_data.get("taker_ratio") or []
-    closes = [k["close"] for k in klines] if klines else []
-    current_price = ticker.get("price") or (closes[-1] if closes else 0)
+    closes_5m     = [k['close'] for k in klines_5m]
+    current_price = ticker.get('price') or (closes_5m[-1] if closes_5m else 0)
 
     if not current_price:
-        return Signal("NEUTRAL", 0, 0, 0, 0, ["No price data"], {})
+        return Signal('NEUTRAL', 0, 0, 0, 0, ['No price data'], {})
 
-    # --- HTF Trend (4H EMA50 vs EMA200) ---
-    htf = get_htf_trend(htf_klines)
-    htf_trend = htf["trend"]   # "bullish" | "bearish" | "neutral"
+    reasons    = []
+    indicators = {'current_price': current_price}
 
-    # --- Compute indicators ---
-    rsi        = calculate_rsi(closes) if closes else 50.0
-    oi_mom     = calculate_oi_momentum(oi_history)
-    funding_sig = calculate_funding_signal(funding.get("funding_rate", 0))
-    ls_sig     = calculate_ls_signal(ls_history)
-    taker_sig  = calculate_taker_pressure_signal(taker_history)
-    delta_sig  = calculate_delta_signal(taker_history, klines)
+    # ── 1. S/R levels from 4H ──────────────────────────────────────────────────
+    sr_levels = find_sr_levels(htf_klines, pivot_strength=3, max_levels=15)
+    indicators['sr_levels'] = [
+        {'price': round(l['price'], 4), 'type': l['type'], 'strength': l['strength']}
+        for l in sr_levels[:6]
+    ]
+    if not sr_levels:
+        return Signal('NEUTRAL', 0, current_price, 0, 0,
+                      ['No S/R levels — insufficient 4H data'], indicators)
 
-    indicators = {
-        "rsi": round(rsi, 2),
-        "oi_roc_pct": round(oi_mom["roc"], 3),
-        "oi_trend": oi_mom["trend"],
-        "oi_acceleration": round(oi_mom["acceleration"], 3),
-        "funding_rate_pct": round(funding_sig["rate_pct"], 4),
-        "funding_signal": funding_sig["signal"],
-        "ls_ratio": round(ls_sig["ratio"], 3),
-        "ls_momentum": round(ls_sig["momentum"], 2),
-        "current_price": current_price,
-        "price_change_24h": ticker.get("price_change_pct", 0),
-        "htf_trend": htf_trend,
-        "htf_ema50": htf["ema50"],
-        "htf_ema200": htf["ema200"],
-        "taker_ratio": round(taker_sig["ratio"], 3),
-        "taker_vs_baseline": round(taker_sig["ratio_vs_baseline"], 2),
-        "taker_vol_spike": round(taker_sig["vol_spike"], 2),
-        "delta_last": delta_sig["delta_last"],
-        "cvd": delta_sig["cvd"],
-        "cvd_slope": delta_sig["cvd_slope"],
-        "cvd_signal": delta_sig["signal"],
-    }
+    # ── 2. Price at level? ────────────────────────────────────────────────────
+    nearest = find_nearest_level(sr_levels, current_price, proximity_pct=0.4)
+    if not nearest:
+        closest = min(sr_levels, key=lambda l: abs(l['price'] - current_price) / current_price)
+        dist    = abs(closest['price'] - current_price) / current_price * 100
+        reasons.append(f"Price not near any S/R — closest {closest['type']} @ "
+                       f"{closest['price']:.4f} ({dist:.2f}% away)")
+        return Signal('NEUTRAL', 0, current_price, 0, 0, reasons, indicators)
 
-    # --- Directional scoring ---
-    long_score  = 0
-    short_score = 0
-    long_signals  = 0   # count of distinct signals pointing LONG
-    short_signals = 0   # count of distinct signals pointing SHORT
-    reasons = []
+    level_price = nearest['price']
+    level_type  = nearest['type']
+    level_dist  = abs(level_price - current_price) / current_price * 100
+    indicators.update({'level_price': level_price, 'level_type': level_type,
+                       'level_strength': nearest['strength']})
+    reasons.append(f"Price at 4H {level_type} {level_price:.4f} "
+                   f"({level_dist:.2f}% away, {nearest['strength']} touches)")
 
-    # 1. HTF trend context (informational — does NOT add score, but gates the trade later)
-    reasons.append(f"4H trend: {htf_trend.upper()} (EMA50={htf['ema50']:.0f} vs EMA200={htf['ema200']:.0f})")
+    # ── 3. Sweep + retest on 15m ──────────────────────────────────────────────
+    sweep = detect_sweep(klines_15m, level_price, level_type)
+    indicators.update({'sweep_detected': sweep['swept'], 'retest_confirmed': sweep['retest'],
+                       'sweep_wick': sweep['sweep_wick']})
 
-    # 2. OI momentum
-    oi_rising  = oi_mom["trend"] == "rising"  and oi_mom["roc"] > 0.3
-    oi_falling = oi_mom["trend"] == "falling" and oi_mom["roc"] < -0.3
-    price_chg  = ticker.get("price_change_pct", 0)
+    if not sweep['swept']:
+        reasons.append(f"No sweep yet — waiting for wick through {level_price:.4f}")
+        return Signal('NEUTRAL', 0, current_price, 0, 0, reasons, indicators)
 
-    if oi_rising:
-        reasons.append(f"OI rising +{oi_mom['roc']:.2f}% — new money entering")
-        if price_chg > 0:
-            long_score  += 20; long_signals  += 1
-        else:
-            short_score += 20; short_signals += 1
-    elif oi_falling:
-        reasons.append(f"OI falling {oi_mom['roc']:.2f}% — positions unwinding")
-        if price_chg > 0:
-            short_score += 15; short_signals += 1
-        else:
-            long_score  += 15; long_signals  += 1
+    if not sweep['retest']:
+        direction_word = 'above' if level_type == 'support' else 'below'
+        reasons.append(f"Sweep detected {sweep['bars_ago']}x 15m ago (wick to "
+                       f"{sweep['sweep_wick']:.4f}) — waiting for close {direction_word} level")
+        return Signal('NEUTRAL', 0, current_price, 0, 0, reasons, indicators)
 
-    if oi_mom["acceleration"] > 0.5:
-        reasons.append("OI accelerating — momentum building")
-        if long_score >= short_score:
-            long_score  += 10
-        else:
-            short_score += 10
+    reasons.append(f"Liquidity sweep confirmed — wick to {sweep['sweep_wick']:.4f} "
+                   f"({sweep['bars_ago']} bars ago), price reclaimed level")
 
-    # 3. Funding rate
-    if funding_sig["signal"] in ("bullish_extreme", "bullish_mild"):
-        reasons.append(f"Funding negative ({funding_sig['rate_pct']:.4f}%) — shorts paying, bullish")
-        long_score  += abs(funding_sig["score"]) + 10
-        long_signals += 1
-    elif funding_sig["signal"] in ("bearish_extreme", "bearish_mild"):
-        reasons.append(f"Funding positive ({funding_sig['rate_pct']:.4f}%) — crowded longs, bearish")
-        short_score  += abs(funding_sig["score"]) + 10
-        short_signals += 1
+    # ── 4. Confirmations ──────────────────────────────────────────────────────
+    direction = 'LONG' if level_type == 'support' else 'SHORT'
+    score     = 50   # base: at level + sweep confirmed
+
+    # Order book imbalance
+    ob = calc_orderbook_imbalance(orderbook)
+    indicators.update({'ob_imbalance': ob['imbalance'], 'ob_bid_usd': ob['bid_usd'],
+                       'ob_ask_usd': ob['ask_usd'], 'ob_signal': ob['signal']})
+    ob_confirms = (direction == 'LONG'  and 'bullish' in ob['signal']) or \
+                  (direction == 'SHORT' and 'bearish' in ob['signal'])
+    ob_opposes  = (direction == 'LONG'  and 'bearish' in ob['signal']) or \
+                  (direction == 'SHORT' and 'bullish' in ob['signal'])
+    if ob_confirms:
+        pts = 25 if 'strong' in ob['signal'] else 15
+        score += pts
+        reasons.append(f"Order book {'bullish' if direction=='LONG' else 'bearish'} — "
+                       f"imbalance {ob['imbalance']:+.2f} "
+                       f"(bids  vs asks )")
+    elif ob_opposes:
+        score -= 15
+        reasons.append(f"Order book opposing — imbalance {ob['imbalance']:+.2f} against {direction}")
     else:
-        reasons.append(f"Funding neutral ({funding_sig['rate_pct']:.4f}%)")
-        long_score += 5   # slight bullish bias on neutral funding
+        reasons.append(f"Order book neutral — imbalance {ob['imbalance']:+.2f}")
 
-    # 4. RSI
-    if rsi < 30:
-        reasons.append(f"RSI oversold ({rsi:.1f}) — strong bullish")
-        long_score += 30; long_signals += 1
-    elif rsi < 40:
-        reasons.append(f"RSI low ({rsi:.1f}) — bullish")
-        long_score += 20; long_signals += 1
-    elif rsi < 50:
-        reasons.append(f"RSI below midline ({rsi:.1f}) — mild bullish")
-        long_score += 10
-    elif rsi > 70:
-        reasons.append(f"RSI overbought ({rsi:.1f}) — strong bearish")
-        short_score += 30; short_signals += 1
-    elif rsi > 60:
-        reasons.append(f"RSI elevated ({rsi:.1f}) — bearish")
-        short_score += 20; short_signals += 1
-    elif rsi > 50:
-        reasons.append(f"RSI above midline ({rsi:.1f}) — mild bearish")
-        short_score += 10
-
-    # 5. Long/Short ratio
-    if ls_sig["signal"] == "bullish":
-        reasons.append(f"LS ratio flipping bullish (+{ls_sig['momentum']:.1f}%)")
-        long_score  += 20; long_signals  += 1
-    elif ls_sig["signal"] == "bearish":
-        reasons.append(f"LS ratio flipping bearish ({ls_sig['momentum']:.1f}%)")
-        short_score += 20; short_signals += 1
+    # CVD / Delta
+    delta = calculate_delta_signal(taker_history, klines_5m)
+    indicators.update({'cvd': delta['cvd'], 'cvd_slope': delta['cvd_slope'],
+                       'cvd_signal': delta['signal']})
+    delta_confirms = (direction == 'LONG'  and 'bullish' in delta['signal']) or \
+                     (direction == 'SHORT' and 'bearish' in delta['signal'])
+    if delta_confirms:
+        score += delta['score']
+        kind = 'confirming' if 'confirm' in delta['signal'] else 'divergence'
+        reasons.append(f"CVD {kind} {direction.lower()} — slope {delta['cvd_slope']:+.0f}")
     else:
-        reasons.append(f"LS ratio neutral ({ls_sig['ratio']:.2f})")
+        reasons.append(f"CVD not confirming — slope {delta['cvd_slope']:+.0f}")
 
-    # 6. Taker pressure (liquidation proxy)
-    # Taker spikes >= 3.0x have 0% win rate empirically ? someone panic-bought at the top.
-    # Real sustained buying sits in the 1.5-3.0x range (46% WR). Cap at 3.0x.
-    if taker_sig["ratio"] >= 3.0:
-        reasons.append(
-            f"Taker spike IGNORED ? ratio {taker_sig['ratio']:.2f}x >= 3.0 is a pump candle, not sustained pressure"
-        )
-        taker_signal = "neutral"
-        taker_score  = 0
+    # Taker ratio
+    taker_ratio = taker_history[-1].get('buy_sell_ratio', 1.0) if taker_history else 1.0
+    indicators['taker_ratio'] = taker_ratio
+    if direction == 'LONG' and taker_ratio >= 1.3:
+        score += 10
+        reasons.append(f"Taker buyers active — {taker_ratio:.2f}x")
+    elif direction == 'SHORT' and taker_ratio <= 0.75:
+        score += 10
+        reasons.append(f"Taker sellers active — {taker_ratio:.2f}x")
     else:
-        taker_signal = taker_sig["signal"]
-        taker_score  = taker_sig["score"]
-    if taker_signal in ("bullish", "bullish_strong"):
-        vol_note = f" (vol spike x{taker_sig['vol_spike']:.1f})" if taker_sig["vol_spike"] > 1.8 else ""
-        reasons.append(
-            f"Taker pressure bullish — buy/sell ratio {taker_sig['ratio']:.2f} "
-            f"({taker_sig['ratio_vs_baseline']:.1f}x baseline){vol_note} — shorts being squeezed"
-        )
-        long_score  += taker_score
-        long_signals += 1
-    elif taker_signal in ("bearish", "bearish_strong"):
-        vol_note = f" (vol spike x{taker_sig['vol_spike']:.1f})" if taker_sig["vol_spike"] > 1.8 else ""
-        reasons.append(
-            f"Taker pressure bearish — buy/sell ratio {taker_sig['ratio']:.2f} "
-            f"({taker_sig['ratio_vs_baseline']:.1f}x baseline){vol_note} — longs being liquidated"
-        )
-        short_score  += taker_score
-        short_signals += 1
+        reasons.append(f"Taker neutral — {taker_ratio:.2f}x")
+
+    indicators['score'] = score
+    min_confidence = config.get('min_confidence', 65)
+
+    if score < min_confidence:
+        reasons.append(f"Score {score} < minimum {min_confidence} — not enough confirmation at level")
+        return Signal('NEUTRAL', score, current_price, 0, 0, reasons, indicators)
+
+    # ── 5. Dynamic SL / TP ────────────────────────────────────────────────────
+    RR          = 2.5
+    BUFFER_PCT  = 0.15
+    MAX_SL_PCT  = 2.0
+
+    if direction == 'LONG':
+        sl_raw    = sweep['sweep_wick'] * (1 - BUFFER_PCT / 100)
+        sl_dist   = (current_price - sl_raw) / current_price * 100
+        if sl_dist > MAX_SL_PCT:
+            sl_raw  = current_price * (1 - MAX_SL_PCT / 100)
+            sl_dist = MAX_SL_PCT
+        sl_price  = round(sl_raw, 4)
+        tp_dist   = sl_dist * RR
+        tp_price  = round(current_price * (1 + tp_dist / 100), 4)
     else:
-        reasons.append(f"Taker pressure neutral (ratio {taker_sig['ratio']:.2f})")
+        sl_raw    = sweep['sweep_wick'] * (1 + BUFFER_PCT / 100)
+        sl_dist   = (sl_raw - current_price) / current_price * 100
+        if sl_dist > MAX_SL_PCT:
+            sl_raw  = current_price * (1 + MAX_SL_PCT / 100)
+            sl_dist = MAX_SL_PCT
+        sl_price  = round(sl_raw, 4)
+        tp_dist   = sl_dist * RR
+        tp_price  = round(current_price * (1 - tp_dist / 100), 4)
 
-    # 7. Delta / CVD signal
-    delta_signal = delta_sig["signal"]
-    delta_score  = delta_sig["score"]
-    cvd_note = f"CVD {delta_sig['cvd']:+.0f} (slope {delta_sig['cvd_slope']:+.1f})"
-    if delta_signal == "bullish_confirm":
-        reasons.append(f"CVD confirming — real buying pressure ({cvd_note})")
-        long_score  += delta_score; long_signals  += 1
-    elif delta_signal == "bearish_confirm":
-        reasons.append(f"CVD confirming — real selling pressure ({cvd_note})")
-        short_score += delta_score; short_signals += 1
-    elif delta_signal == "bullish_divergence":
-        # Only trust divergence if taker pressure is not actively bearish
-        # (taker shows what is happening NOW; divergence is backward-looking)
-        if taker_sig["ratio"] >= 0.80:
-            reasons.append(f"CVD bullish divergence — accumulation while price fell ({cvd_note})")
-            long_score  += delta_score; long_signals  += 1
-        else:
-            reasons.append(
-                f"CVD bullish divergence IGNORED — taker actively bearish "
-                f"({taker_sig['ratio']:.2f}x) overrides backward-looking CVD"
-            )
-    elif delta_signal == "bearish_divergence":
-        # Only trust divergence if taker pressure is not actively bullish
-        if taker_sig["ratio"] <= 1.20:
-            reasons.append(f"CVD bearish divergence — distribution while price rose ({cvd_note})")
-            short_score += delta_score; short_signals += 1
-        else:
-            reasons.append(
-                f"CVD bearish divergence IGNORED — taker actively bullish "
-                f"({taker_sig['ratio']:.2f}x) overrides backward-looking CVD"
-            )
-    else:
-        reasons.append(f"CVD neutral ({cvd_note})")
-
-    # --- Determine direction ---
-    # Rules:
-    # 1. Score must reach min_confidence threshold
-    # 2. Must have at least 2 distinct signals agreeing (not just 1 strong RSI alone)
-    # 3. 4H trend must not be against the trade direction
-    min_score = config.get("min_confidence", 65)   # Updated: 65 min — quality over quantity
-    MIN_SIGNALS = 2   # require at least 2 distinct indicators pointing same way
-
-    long_ok  = (long_score > short_score
-                and long_score >= min_score
-                and long_signals >= MIN_SIGNALS
-                and htf_trend != "bearish")   # don't long in 4H downtrend
-
-    short_ok = (short_score > long_score
-                and short_score >= min_score
-                and short_signals >= MIN_SIGNALS
-                and htf_trend != "bullish")   # don't short in 4H uptrend
-
-    # ── RSI quality gates ──────────────────────────────────────────────────
-    # Empirically: LONGs at RSI >= 80 have 0% win rate (chasing extended moves).
-    # LONGs at RSI 62-80 only work when funding is actively bullish (shorts paying).
-    # Mirror logic for SHORTs.
-    funding_bullish = funding_sig["signal"] in ("bullish_mild", "bullish_extreme")
-    funding_bearish = funding_sig["signal"] in ("bearish_mild", "bearish_extreme")
-
-    if long_ok:
-        if rsi >= 80:
-            long_ok = False
-            reasons.append(
-                f"Quality gate: RSI {rsi:.0f} ≥ 80 — price is extended, not chasing a long here"
-            )
-        elif rsi >= 62 and not funding_bullish:
-            long_ok = False
-            reasons.append(
-                f"Quality gate: RSI elevated ({rsi:.0f}) with neutral funding — "
-                f"need funding support to long an extended move"
-            )
-        elif 40 <= rsi < 55:
-            long_ok = False
-            reasons.append(
-                f"Quality gate: RSI {rsi:.0f} in dead zone (40-55) "
-                f"-- not oversold enough to bounce, not strong enough to continue"
-            )
-        elif oi_mom["trend"] == "falling":
-            long_ok = False
-            reasons.append(
-                f"Quality gate: OI falling ({oi_mom['roc']:.2f}%) — "
-                f"positions unwinding, not a clean long entry"
-            )
-        elif taker_sig["ratio"] < 1.3:
-            long_ok = False
-            reasons.append(
-                f"Quality gate: taker ratio {taker_sig['ratio']:.2f} < 1.3 — "
-                f"no real buyers yet, not entering a falling knife"
-            )
-        elif klines and klines[-1]["close"] <= klines[-1]["open"]:
-            long_ok = False
-            reasons.append(
-                f"Quality gate: confirmation candle failed — last bar is red "
-                f"(close {klines[-1]['close']:.2f} <= open {klines[-1]['open']:.2f}), "
-                f"price still falling, waiting for green close"
-            )
-
-    # ── BTC macro filter for alt coins ────────────────────────────────────────
-    # Block alt LONGs when BTC 4H trend is bearish (EMA50 < EMA200).
-    # Alts bleed in BTC downtrends regardless of their own signals.
-    # btc_htf_klines is injected by main.py for non-BTC/ETH symbols only.
-    btc_htf_klines = market_data.get("btc_htf_klines") or []
-    if long_ok and btc_htf_klines:
-        btc_htf = get_htf_trend(btc_htf_klines)
-        if btc_htf["trend"] == "bearish":
-            long_ok = False
-            reasons.append(
-                f"Quality gate: BTC macro filter — BTC 4H bearish "
-                f"(EMA50={btc_htf['ema50']:.0f} < EMA200={btc_htf['ema200']:.0f}), "
-                f"blocking alt LONG"
-            )
-
-    # ── SHORTs disabled ────────────────────────────────────────────────────────
-    # Historical SHORT win rate = 13% (3 wins / 22 trades). Strategy is LONG-only.
-    # Keeping the scoring logic intact so confidence numbers are still accurate,
-    # but no SHORT trade will ever be opened.
-    MIN_SHORT_CONFIDENCE = 75  # SHORTs need higher bar -- 13% WR vs 36% for LONGs historically
-    if short_ok:
-        if short_score < MIN_SHORT_CONFIDENCE:
-            short_ok = False
-            reasons.append(
-                f"Quality gate: SHORT confidence {short_score:.0f} < {MIN_SHORT_CONFIDENCE} "
-                f"-- shorts need higher conviction (historical SHORT win rate is only 13%)"
-            )
-        elif rsi <= 20:
-            short_ok = False
-            reasons.append(
-                f"Quality gate: RSI {rsi:.0f} ≤ 20 — price is oversold, not chasing a short here"
-            )
-        elif rsi <= 38 and not funding_bearish:
-            short_ok = False
-            reasons.append(
-                f"Quality gate: RSI low ({rsi:.0f}) with neutral funding — "
-                f"need funding support to short an oversold move"
-            )
-
-    # Hard block — strategy is LONG-only (SHORT WR = 13% historically)
-    if short_ok:
-        short_ok = False
-        reasons.append(
-            f"Quality gate: SHORTs disabled — strategy is LONG-only "
-            f"(historical SHORT WR 13%, 3/22 trades). Re-enable only with new evidence."
-        )
-
-    if long_ok:
-        direction  = "LONG"
-        confidence = min(long_score, 100)
-        tp_price   = round(current_price * (1 + tp_pct / 100), 2)
-        sl_price   = round(current_price * (1 - sl_pct / 100), 2)
-    elif short_ok:
-        direction  = "SHORT"
-        confidence = min(short_score, 100)
-        tp_price   = round(current_price * (1 - tp_pct / 100), 2)
-        sl_price   = round(current_price * (1 + sl_pct / 100), 2)
-    else:
-        direction  = "NEUTRAL"
-        confidence = max(long_score, short_score)
-        tp_price   = 0
-        sl_price   = 0
-        # Add reason for being neutral
-        blocks = []
-        if htf_trend == "bearish" and long_score > short_score:
-            blocks.append("4H downtrend blocks LONG")
-        if htf_trend == "bullish" and short_score > long_score:
-            blocks.append("4H uptrend blocks SHORT")
-        if long_signals < MIN_SIGNALS and long_score > short_score:
-            blocks.append(f"only {long_signals}/2 signals agreeing for LONG")
-        if short_signals < MIN_SIGNALS and short_score > long_score:
-            blocks.append(f"only {short_signals}/2 signals agreeing for SHORT")
-        if blocks:
-            reasons.append("Blocked: " + " | ".join(blocks))
-        elif not reasons:
-            reasons.append("No clear signal — conditions mixed")
+    indicators.update({'sl_pct': round(sl_dist, 3), 'tp_pct': round(tp_dist, 3),
+                       'rr_ratio': RR})
+    reasons.append(f"SL @ {sl_price:.4f} ({sl_dist:.2f}% risk) | "
+                   f"TP @ {tp_price:.4f} (+{tp_dist:.2f}%, {RR}:1 R:R)")
 
     return Signal(
         direction=direction,
-        confidence=confidence,
+        confidence=min(int(score), 100),
         entry_price=current_price,
         tp_price=tp_price,
         sl_price=sl_price,

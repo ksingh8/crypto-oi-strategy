@@ -1,11 +1,11 @@
-import asyncio
+﻿import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -20,61 +20,43 @@ logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 CONFIG = {
-    "symbols": os.getenv("SYMBOLS", "ETHUSDT,AVAXUSDT,LTCUSDT").split(","),  # BTC removed 2026-04-25: 23.3% WR below 28.6% break-even across 30 trades
-    "tp_pct": float(os.getenv("TP_PCT", "3.0")),
-    "sl_pct": float(os.getenv("SL_PCT", "1.2")),
-    "min_confidence": float(os.getenv("MIN_CONFIDENCE", "65")),
-    "position_size_usd": float(os.getenv("POSITION_SIZE_USD", "100")),
-    "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL", "5")),
+    "symbols":               os.getenv("SYMBOLS", "ETHUSDT,AVAXUSDT,LTCUSDT").split(","),
+    "tp_pct":                float(os.getenv("TP_PCT",            "3.0")),   # kept for reference; TP is now dynamic
+    "sl_pct":                float(os.getenv("SL_PCT",            "1.2")),   # kept for reference; SL is now dynamic
+    "min_confidence":        float(os.getenv("MIN_CONFIDENCE",    "65")),
+    "position_size_usd":     float(os.getenv("POSITION_SIZE_USD", "100")),
+    "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL",  "5")),
+    "strategy_version":      "v2_sr",
 }
 
-scheduler = AsyncIOScheduler()
-latest_market_data = {}  # in-memory cache
+STRATEGY_VERSION = "v2_sr"
 
-# ── Core loop ───────────────────────────────────────────────────────────────────
-# Hours (UTC) with 0% win rate across 25 trades ? empirically derived
-BAD_HOURS_UTC = {0, 2, 4, 5, 11, 16, 17, 22}
+scheduler          = AsyncIOScheduler()
+latest_market_data = {}
 
+# ── Core loop ──────────────────────────────────────────────────────────────────
 async def run_strategy_cycle():
-    # Time-of-day filter: skip signal generation during known bad hours
-    current_hour = datetime.now(timezone.utc).hour
-    if current_hour in BAD_HOURS_UTC:
-        logger.info(f"[TIME FILTER] Hour {current_hour}h UTC is a known bad hour — skipping signal cycle")
-        return
-
-    # BTC macro filter: fetch BTC 4H klines once for AVAX/LTC (BTC no longer traded)
-    try:
-        btc_market_data = await bc.get_all_market_data("BTCUSDT")
-        btc_htf_klines_cache = btc_market_data.get("htf_klines") or []
-    except Exception as e:
-        logger.warning(f"BTC htf fetch failed: {e}")
-        btc_htf_klines_cache = []
-
     for symbol in CONFIG["symbols"]:
         try:
             market_data = await bc.get_all_market_data(symbol)
             latest_market_data[symbol] = {
-                "data": market_data,
+                "data":       market_data,
                 "updated_at": datetime.utcnow().isoformat()
             }
 
-            ticker = market_data.get("ticker") or {}
-            oi = market_data.get("oi") or {}
-            funding = market_data.get("funding") or {}
+            ticker    = market_data.get("ticker") or {}
+            oi        = market_data.get("oi")      or {}
+            funding   = market_data.get("funding") or {}
             ls_history = market_data.get("ls_ratio") or []
 
             current_price = ticker.get("price", 0)
             if not current_price:
                 continue
 
-            # BTC macro filter (#5): inject pre-fetched BTC 4H klines into alt market_data
-            if symbol not in ("ETHUSDT",) and btc_htf_klines_cache:
-                market_data["btc_htf_klines"] = btc_htf_klines_cache
-
-            # Save snapshot
-            ls_ratio = ls_history[-1]["long_short_ratio"] if ls_history else None
+            # Save price snapshot
             taker_history = market_data.get("taker_ratio") or []
-            taker_last = taker_history[-1] if taker_history else {}
+            taker_last    = taker_history[-1] if taker_history else {}
+            ls_ratio      = ls_history[-1]["long_short_ratio"] if ls_history else None
             db.save_price_snapshot(
                 symbol, current_price,
                 oi=oi.get("oi"),
@@ -85,30 +67,27 @@ async def run_strategy_cycle():
                 taker_ratio=taker_last.get("buy_sell_ratio"),
             )
 
-            # Check existing positions — pass klines so candle highs/lows catch missed hits
+            # Check existing positions
             klines = market_data.get("klines") or []
             pt.check_open_positions(current_price, symbol, klines)
 
             # Generate signal
             signal = generate_signal(market_data, CONFIG)
-            db.save_signal(signal, symbol)
+            db.save_signal(signal, symbol, strategy_version=STRATEGY_VERSION)
 
-            logger.info(f"[{symbol}] {signal.direction} confidence={signal.confidence} price={current_price}")
+            logger.info(f"[{symbol}] {signal.direction} conf={signal.confidence} price={current_price}")
 
-            # Open trade if warranted
             if signal.direction != "NEUTRAL":
-                pt.open_paper_trade(signal, symbol, CONFIG)
+                pt.open_paper_trade(signal, symbol, CONFIG, strategy_version=STRATEGY_VERSION)
 
         except Exception as e:
-            logger.error(f"Error in strategy cycle for {symbol}: {e}", exc_info=True)
+            logger.error(f"Error in strategy cycle [{symbol}]: {e}", exc_info=True)
 
 
 async def check_positions_only():
-    """Lightweight cycle: only check open positions for TP/SL, no new signals."""
     for symbol in CONFIG["symbols"]:
         try:
-            open_trades = db.get_open_trades(symbol)
-            if not open_trades:
+            if not db.get_open_trades(symbol):
                 continue
             ticker = await bc.get_ticker_24h(symbol)
             current_price = ticker.get("price", 0)
@@ -123,34 +102,35 @@ async def check_positions_only():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
-    # Signal generation every 5 min
     scheduler.add_job(run_strategy_cycle, "interval",
                       minutes=CONFIG["signal_interval_minutes"], id="strategy")
-    # Position TP/SL check every 1 min (lightweight — ticker + recent klines only)
     scheduler.add_job(check_positions_only, "interval", minutes=1, id="pos_check")
     scheduler.start()
-    # Run immediately on startup
     asyncio.create_task(run_strategy_cycle())
     yield
     scheduler.shutdown()
 
 
-app = FastAPI(title="OI Strategy Bot", lifespan=lifespan)
+app = FastAPI(title="SR Order Flow Bot", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ── API Routes ──────────────────────────────────────────────────────────────────
+# ── API Routes ─────────────────────────────────────────────────────────────────
 @app.get("/api/stats")
-def get_stats():
-    return db.get_stats()
+def get_stats(v: str = Query(default="v2_sr")):
+    """v=v2_sr (default) | v=v1_oi | v=all"""
+    version = None if v == "all" else v
+    return db.get_stats(strategy_version=version)
 
 @app.get("/api/trades")
-def get_trades(limit: int = 100):
-    return db.get_all_trades(limit)
+def get_trades(limit: int = 100, v: str = Query(default="v2_sr")):
+    version = None if v == "all" else v
+    return db.get_all_trades(limit, strategy_version=version)
 
 @app.get("/api/signals")
-def get_signals(limit: int = 50):
-    return db.get_recent_signals(limit)
+def get_signals(limit: int = 50, v: str = Query(default="v2_sr")):
+    version = None if v == "all" else v
+    return db.get_recent_signals(limit, strategy_version=version)
 
 @app.get("/api/open-trades")
 def get_open_trades():
@@ -162,7 +142,7 @@ def price_history(symbol: str, limit: int = 200):
 
 @app.get("/api/market-data/{symbol}")
 async def market_data_live(symbol: str):
-    sym = symbol.upper()
+    sym    = symbol.upper()
     cached = latest_market_data.get(sym)
     if cached:
         return cached
@@ -179,13 +159,11 @@ def get_config():
 
 @app.post("/api/run-now")
 async def run_now():
-    """Manually trigger a strategy cycle"""
     await run_strategy_cycle()
     return {"status": "ok", "ran_at": datetime.utcnow().isoformat()}
 
 @app.post("/api/close-trade/{trade_id}")
 def manual_close(trade_id: int, price: float):
-    """Manually close a trade"""
     db.close_trade(trade_id, price, "MANUAL")
     return {"status": "closed"}
 

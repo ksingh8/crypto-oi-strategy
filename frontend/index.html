@@ -622,7 +622,14 @@
   <div class="panel">
     <div class="panel-header">
       <span class="panel-title">All Trades</span>
-      <span id="tradeCount" style="font-size:11px;color:var(--muted);">—</span>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span id="tradeCount" style="font-size:11px;color:var(--muted);">—</span>
+        <button id="versionToggle" onclick="toggleVersion()"
+          style="font-size:10px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);
+                 background:var(--surface2);color:var(--muted);cursor:pointer;">
+          Show v1 history
+        </button>
+      </div>
     </div>
     <div class="table-wrap" id="tradesTable">
       <div class="loading"><div class="spinner"></div></div>
@@ -634,6 +641,7 @@
 const API = '';
 let activeSymbol = null;
 let symbols = [];
+let strategyView = 'v2_sr';  // 'v2_sr' | 'v1_oi' | 'all'
 let priceChart = null;
 let oiChart = null;
 let takerChart = null;
@@ -804,6 +812,25 @@ async function api(path) {
   return r.json();
 }
 
+
+function toggleVersion() {
+  const btn = document.getElementById('versionToggle');
+  if (strategyView === 'v2_sr') {
+    strategyView = 'all';
+    btn.textContent = 'Show v2 only';
+    btn.style.color = 'var(--accent)';
+    btn.style.borderColor = 'var(--accent)';
+  } else {
+    strategyView = 'v2_sr';
+    btn.textContent = 'Show v1 history';
+    btn.style.color = 'var(--muted)';
+    btn.style.borderColor = 'var(--border)';
+  }
+  loadStats();
+  loadTrades();
+  loadSignals();
+}
+
 async function loadConfig() {
   const cfg = await api('/api/config');
   symbols = cfg.symbols || ['BTCUSDT'];
@@ -812,17 +839,17 @@ async function loadConfig() {
 }
 
 async function loadStats() {
-  const stats = await api('/api/stats');
+  const stats = await api('/api/stats?v=' + strategyView);
   renderStats(stats);
 }
 
 async function loadTrades() {
-  const trades = await api('/api/trades?limit=100');
+  const trades = await api('/api/trades?limit=100&v=' + strategyView);
   renderTrades(trades);
 }
 
 async function loadSignals() {
-  const signals = await api('/api/signals?limit=30');
+  const signals = await api('/api/signals?limit=30&v=' + strategyView);
   renderSignals(signals);
 }
 

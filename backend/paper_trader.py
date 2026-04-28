@@ -122,32 +122,40 @@ def should_open_trade(signal, symbol: str, config: dict) -> tuple[bool, str]:
     return True, "OK"
 
 
-def open_paper_trade(signal, symbol: str, config: dict) -> dict | None:
+def open_paper_trade(signal, symbol: str, config: dict,
+                     strategy_version: str = 'v2_sr') -> dict | None:
     should, reason = should_open_trade(signal, symbol, config)
     if not should:
         logger.info(f"Skipping trade: {reason}")
         return None
 
     position_size = config.get("position_size_usd", 100)
-    trade_id = db.open_trade(signal, symbol, position_size)
+    trade_id = db.open_trade(signal, symbol, position_size, strategy_version=strategy_version)
 
-    tp_pct = config.get("tp_pct", 2.0)
-    sl_pct = config.get("sl_pct", 0.8)
-    htf    = signal.indicators.get("htf_trend", "?").upper()
-
-    # Format entry reasons (skip the HTF line since we show it separately)
-    entry_reasons = [r for r in signal.reasons if "4H trend" not in r]
-    reasons_text  = "\n".join(f"  • {r}" for r in entry_reasons[:4])
-
-    logger.info(f"Opened {signal.direction} #{trade_id} @ {signal.entry_price} "
-                f"TP={signal.tp_price} SL={signal.sl_price} conf={signal.confidence} HTF={htf}")
-
+    sl_pct   = signal.indicators.get('sl_pct', config.get('sl_pct', 1.2))
+    tp_pct   = signal.indicators.get('tp_pct', config.get('tp_pct', 3.0))
+    level    = signal.indicators.get('level_price', 0)
+    lvl_type = signal.indicators.get('level_type', '')
+    ob_imb   = signal.indicators.get('ob_imbalance', 0)
+    reasons_text = '
+'.join(f'  - {r}' for r in signal.reasons[:4])
+    logger.info(f'Opened {signal.direction} #{trade_id} @ {signal.entry_price} TP={signal.tp_price} SL={signal.sl_price} conf={signal.confidence}')
+    emoji = '🟢' if signal.direction == 'LONG' else '🔴'
     send_tg(
-        f"{'🟢' if signal.direction == 'LONG' else '🔴'} <b>OI Bot — {signal.direction} OPENED</b>\n\n"
-        f"<b>{symbol}</b> @ ${signal.entry_price:,.2f}\n"
-        f"🎯 TP: ${signal.tp_price:,.2f} (+{tp_pct}%)  |  🛑 SL: ${signal.sl_price:,.2f} (-{sl_pct}%)\n"
-        f"📊 Confidence: {signal.confidence:.0f}/100  |  4H: {htf}\n\n"
-        f"<b>Why this trade:</b>\n{reasons_text}"
+        f'{emoji} <b>SR Bot - {signal.direction} OPENED</b>
+
+'
+        f'<b>{symbol}</b> @ ${signal.entry_price:,.4f}
+'
+        f'Level: {lvl_type} @ {level:.4f}
+'
+        f'TP: ${signal.tp_price:,.4f} (+{tp_pct:.2f}%)  |  SL: ${signal.sl_price:,.4f} (-{sl_pct:.2f}%)
+'
+        f'Confidence: {signal.confidence:.0f}/100  |  OB: {ob_imb:+.2f}
+
+'
+        f'<b>Setup:</b>
+{reasons_text}'
     )
 
     return {"trade_id": trade_id, "direction": signal.direction, "entry": signal.entry_price}

@@ -1,4 +1,4 @@
-import httpx
+﻿import httpx
 import asyncio
 from typing import Optional
 import logging
@@ -6,7 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 BASE_FUTURES = "https://fapi.binance.com"
-BASE_SPOT = "https://api.binance.com"
+BASE_SPOT    = "https://api.binance.com"
 
 async def fetch(url: str, params: dict = {}) -> dict | list:
     async with httpx.AsyncClient(timeout=10) as client:
@@ -16,7 +16,6 @@ async def fetch(url: str, params: dict = {}) -> dict | list:
 
 async def get_open_interest(symbol: str) -> dict:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/openInterest", {"symbol": symbol})
-    # Note: openInterestValue is only in /openInterestHist, not this snapshot endpoint
     oi = float(data.get("openInterest", 0))
     return {"oi": oi, "oi_usd": 0.0}
 
@@ -31,13 +30,9 @@ async def get_funding_rate(symbol: str) -> dict:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/premiumIndex", {"symbol": symbol})
     return {
         "funding_rate": float(data["lastFundingRate"]),
-        "mark_price": float(data["markPrice"]),
-        "index_price": float(data["indexPrice"])
+        "mark_price":   float(data["markPrice"]),
+        "index_price":  float(data["indexPrice"])
     }
-
-async def get_funding_history(symbol: str, limit: int = 50) -> list:
-    data = await fetch(f"{BASE_FUTURES}/fapi/v1/fundingRate", {"symbol": symbol, "limit": limit})
-    return [{"timestamp": d["fundingTime"], "rate": float(d["fundingRate"])} for d in data]
 
 async def get_klines(symbol: str, interval: str = "5m", limit: int = 50) -> list:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/klines", {
@@ -57,59 +52,60 @@ async def get_long_short_ratio(symbol: str, period: str = "5m", limit: int = 50)
              "long_account": float(d["longAccount"]), "short_account": float(d["shortAccount"])}
             for d in data]
 
-async def get_liquidations(symbol: str, limit: int = 50) -> list:
-    try:
-        data = await fetch(f"{BASE_FUTURES}/fapi/v1/allForceOrders", {
-            "symbol": symbol, "limit": limit
-        })
-        return [{"timestamp": d["time"], "side": d["side"],
-                 "quantity": float(d["origQty"]), "price": float(d["price"]),
-                 "usd_value": float(d["origQty"]) * float(d["price"])} for d in data]
-    except Exception:
-        return []
-
-
 async def get_taker_ratio(symbol: str, period: str = "5m", limit: int = 24) -> list:
-    """Taker buy/sell volume ratio — proxy for liquidation pressure.
-    buySellRatio > 1 = more aggressive buying (shorts being squeezed)
-    buySellRatio < 1 = more aggressive selling (longs being liquidated)
-    """
     data = await fetch(f"{BASE_FUTURES}/futures/data/takerlongshortRatio", {
         "symbol": symbol, "period": period, "limit": limit
     })
     return [{"timestamp": int(d["timestamp"]),
              "buy_sell_ratio": float(d["buySellRatio"]),
-             "buy_vol": float(d["buyVol"]),
-             "sell_vol": float(d["sellVol"])} for d in data]
+             "buy_vol":        float(d["buyVol"]),
+             "sell_vol":       float(d["sellVol"])} for d in data]
 
 async def get_ticker_24h(symbol: str) -> dict:
     data = await fetch(f"{BASE_FUTURES}/fapi/v1/ticker/24hr", {"symbol": symbol})
     return {
-        "price": float(data["lastPrice"]),
+        "price":            float(data["lastPrice"]),
         "price_change_pct": float(data["priceChangePercent"]),
-        "volume": float(data["volume"]),
-        "high": float(data["highPrice"]),
-        "low": float(data["lowPrice"])
+        "volume":           float(data["volume"]),
+        "high":             float(data["highPrice"]),
+        "low":              float(data["lowPrice"])
+    }
+
+async def get_orderbook(symbol: str, limit: int = 20) -> dict:
+    """
+    Fetch order book depth.
+    Returns bids/asks as [[price_str, qty_str], ...] sorted best-first.
+    limit: 5, 10, 20, 50, 100, 500, 1000
+    """
+    data = await fetch(f"{BASE_FUTURES}/fapi/v1/depth", {
+        "symbol": symbol, "limit": limit
+    })
+    return {
+        "bids": data.get("bids", []),  # [[price, qty], ...] descending
+        "asks": data.get("asks", []),  # [[price, qty], ...] ascending
     }
 
 async def get_all_market_data(symbol: str) -> dict:
-    """Fetch all needed data concurrently — includes 4H klines for HTF trend filter"""
+    """Fetch all needed data concurrently for S/R + order flow strategy."""
     results = await asyncio.gather(
         get_open_interest(symbol),
         get_oi_history(symbol, "5m", 50),
         get_funding_rate(symbol),
-        get_klines(symbol, "5m", 100),
+        get_klines(symbol, "5m", 100),         # 5m klines — entry candles + CVD
         get_long_short_ratio(symbol, "5m", 50),
         get_ticker_24h(symbol),
-        get_klines(symbol, "4h", 210),   # HTF trend — EMA50/200 needs 200+ bars
-        get_taker_ratio(symbol, "5m", 24),  # taker buy/sell pressure (liquidation proxy)
+        get_klines(symbol, "4h", 210),          # 4H klines — S/R level detection
+        get_taker_ratio(symbol, "5m", 24),      # taker buy/sell — delta confirmation
+        get_klines(symbol, "15m", 60),          # 15m klines — sweep + retest detection
+        get_orderbook(symbol, limit=20),        # order book depth — who is in control
         return_exceptions=True
     )
-    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker", "htf_klines", "taker_ratio"]
+    keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker",
+            "htf_klines", "taker_ratio", "klines_15m", "orderbook"]
     out = {}
     for k, v in zip(keys, results):
         if isinstance(v, Exception):
-            logger.warning(f"Failed fetching {k}: {v}")
+            logger.warning(f"Failed fetching {k} for {symbol}: {v}")
             out[k] = None
         else:
             out[k] = v
