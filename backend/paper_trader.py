@@ -137,25 +137,16 @@ def open_paper_trade(signal, symbol: str, config: dict,
     level    = signal.indicators.get('level_price', 0)
     lvl_type = signal.indicators.get('level_type', '')
     ob_imb   = signal.indicators.get('ob_imbalance', 0)
-    reasons_text = '
-'.join(f'  - {r}' for r in signal.reasons[:4])
+    reasons_text = " | ".join(signal.reasons[:4])
     logger.info(f'Opened {signal.direction} #{trade_id} @ {signal.entry_price} TP={signal.tp_price} SL={signal.sl_price} conf={signal.confidence}')
     emoji = '🟢' if signal.direction == 'LONG' else '🔴'
     send_tg(
-        f'{emoji} <b>SR Bot - {signal.direction} OPENED</b>
-
-'
-        f'<b>{symbol}</b> @ ${signal.entry_price:,.4f}
-'
-        f'Level: {lvl_type} @ {level:.4f}
-'
-        f'TP: ${signal.tp_price:,.4f} (+{tp_pct:.2f}%)  |  SL: ${signal.sl_price:,.4f} (-{sl_pct:.2f}%)
-'
-        f'Confidence: {signal.confidence:.0f}/100  |  OB: {ob_imb:+.2f}
-
-'
-        f'<b>Setup:</b>
-{reasons_text}'
+        f"{emoji} <b>SR Bot - {signal.direction} OPENED</b>\n\n"
+        f"<b>{symbol}</b> @ ${signal.entry_price:,.4f}\n"
+        f"Level: {lvl_type} @ {level:.4f}\n"
+        f"TP: ${signal.tp_price:,.4f} (+{tp_pct:.2f}%)  |  SL: ${signal.sl_price:,.4f} (-{sl_pct:.2f}%)\n"
+        f"Confidence: {signal.confidence:.0f}/100  |  OB: {ob_imb:+.2f}\n\n"
+        f"<b>Setup:</b>\n{reasons_text}"
     )
 
     return {"trade_id": trade_id, "direction": signal.direction, "entry": signal.entry_price}
