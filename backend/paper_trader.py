@@ -10,7 +10,7 @@ import database as db
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7775433175:AAGOfkg9fTskJW6e5YD2RPLGhuz0r8eJdtk")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7775433175:AAFISLH8L375CqiqGih2BU41uK2wgxfuye4")
 CHAT_ID        = os.getenv("TELEGRAM_CHAT",  "1279109702")
 
 MAX_OPEN_TRADES = 1
@@ -106,25 +106,27 @@ def _analyze_trade_outcome(trade: dict, result: str, duration_mins: float) -> st
         return f"Why it lost: setup was valid, market reversed after {duration_mins:.0f}m — no clear warning signs at entry."
 
 
-def should_open_trade(signal, symbol: str, config: dict) -> tuple[bool, str]:
+def should_open_trade(signal, symbol: str, config: dict,
+                      strategy_version: str = "v2_sr") -> tuple[bool, str]:
     if signal.direction == "NEUTRAL":
         return False, "No signal"
-    if signal.confidence < config.get("min_confidence", 40):
-        return False, f"Confidence too low ({signal.confidence})"
-    open_trades = db.get_open_trades(symbol)
-    if len(open_trades) >= MAX_OPEN_TRADES:
-        return False, f"Max open trades reached ({MAX_OPEN_TRADES})"
-    same_dir = [t for t in open_trades if t["direction"] == signal.direction]
+    min_conf = 65 if strategy_version == "v3_ema" else config.get("min_confidence", 75)
+    if signal.confidence < min_conf:
+        return False, f"Confidence too low ({signal.confidence} < {min_conf})"
+    all_open   = db.get_open_trades(symbol)
+    strat_open = [t for t in all_open if t.get("strategy_version") == strategy_version]
+    if len(strat_open) >= MAX_OPEN_TRADES:
+        return False, f"Max open {strategy_version} trades reached ({MAX_OPEN_TRADES})"
+    same_dir = [t for t in strat_open if t["direction"] == signal.direction]
     if same_dir:
-        return False, f"Already have open {signal.direction} trade"
+        return False, f"Already have open {signal.direction} {strategy_version} trade"
     if db.had_recent_sl(symbol, signal.direction, minutes=30):
         return False, f"SL cooldown active — skipping {signal.direction} for 30 min"
     return True, "OK"
 
-
 def open_paper_trade(signal, symbol: str, config: dict,
                      strategy_version: str = 'v2_sr') -> dict | None:
-    should, reason = should_open_trade(signal, symbol, config)
+    should, reason = should_open_trade(signal, symbol, config, strategy_version=strategy_version)
     if not should:
         logger.info(f"Skipping trade: {reason}")
         return None
@@ -139,9 +141,10 @@ def open_paper_trade(signal, symbol: str, config: dict,
     ob_imb   = signal.indicators.get('ob_imbalance', 0)
     reasons_text = " | ".join(signal.reasons[:4])
     logger.info(f'Opened {signal.direction} #{trade_id} @ {signal.entry_price} TP={signal.tp_price} SL={signal.sl_price} conf={signal.confidence}')
+    strat_label = "SR Bot" if strategy_version == "v2_sr" else "EMA Bot"
     emoji = '🟢' if signal.direction == 'LONG' else '🔴'
     send_tg(
-        f"{emoji} <b>SR Bot - {signal.direction} OPENED</b>\n\n"
+        f"{emoji} <b>{strat_label} [{strategy_version}] - {signal.direction} OPENED</b>\n\n"
         f"<b>{symbol}</b> @ ${signal.entry_price:,.4f}\n"
         f"Level: {lvl_type} @ {level:.4f}\n"
         f"TP: ${signal.tp_price:,.4f} (+{tp_pct:.2f}%)  |  SL: ${signal.sl_price:,.4f} (-{sl_pct:.2f}%)\n"

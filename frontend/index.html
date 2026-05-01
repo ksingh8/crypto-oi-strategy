@@ -627,7 +627,7 @@
         <button id="versionToggle" onclick="toggleVersion()"
           style="font-size:10px;padding:3px 8px;border-radius:4px;border:1px solid var(--border);
                  background:var(--surface2);color:var(--muted);cursor:pointer;">
-          Show v1 history
+          v2: S/R Sweep
         </button>
       </div>
     </div>
@@ -641,7 +641,7 @@
 const API = '';
 let activeSymbol = null;
 let symbols = [];
-let strategyView = 'v2_sr';  // 'v2_sr' | 'v1_oi' | 'all'
+let strategyView = 'v2_sr';  // 'v2_sr' | 'v3_ema' | 'all'
 let priceChart = null;
 let oiChart = null;
 let takerChart = null;
@@ -816,13 +816,18 @@ async function api(path) {
 function toggleVersion() {
   const btn = document.getElementById('versionToggle');
   if (strategyView === 'v2_sr') {
+    strategyView = 'v3_ema';
+    btn.textContent = 'v3: EMA Scalp';
+    btn.style.color = '#f59e0b';
+    btn.style.borderColor = '#f59e0b';
+  } else if (strategyView === 'v3_ema') {
     strategyView = 'all';
-    btn.textContent = 'Show v2 only';
+    btn.textContent = 'All strategies';
     btn.style.color = 'var(--accent)';
     btn.style.borderColor = 'var(--accent)';
   } else {
     strategyView = 'v2_sr';
-    btn.textContent = 'Show v1 history';
+    btn.textContent = 'v2: S/R Sweep';
     btn.style.color = 'var(--muted)';
     btn.style.borderColor = 'var(--border)';
   }

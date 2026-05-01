@@ -14,6 +14,7 @@ import binance_client as bc
 import database as db
 import paper_trader as pt
 from strategy import generate_signal
+from strategy_ema import generate_ema_signal
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -29,7 +30,9 @@ CONFIG = {
     "strategy_version":      "v2_sr",
 }
 
-STRATEGY_VERSION = "v2_sr"
+STRATEGY_VERSION     = "v2_sr"
+EMA_STRATEGY_VERSION = "v3_ema"
+EMA_POSITION_SIZE    = 50   # smaller size for higher-frequency EMA scalps
 
 scheduler          = AsyncIOScheduler()
 latest_market_data = {}
@@ -71,14 +74,20 @@ async def run_strategy_cycle():
             klines = market_data.get("klines") or []
             pt.check_open_positions(current_price, symbol, klines)
 
-            # Generate signal
+            # ── v2_sr: S/R + Order Flow signal ──────────────────────
             signal = generate_signal(market_data, CONFIG)
             db.save_signal(signal, symbol, strategy_version=STRATEGY_VERSION)
-
-            logger.info(f"[{symbol}] {signal.direction} conf={signal.confidence} price={current_price}")
-
+            logger.info(f"[{symbol}] v2 {signal.direction} conf={signal.confidence} price={current_price}")
             if signal.direction != "NEUTRAL":
                 pt.open_paper_trade(signal, symbol, CONFIG, strategy_version=STRATEGY_VERSION)
+
+            # ── v3_ema: EMA Pullback Scalp signal ───────────────────
+            ema_signal = generate_ema_signal(market_data, CONFIG)
+            db.save_signal(ema_signal, symbol, strategy_version=EMA_STRATEGY_VERSION)
+            logger.info(f"[{symbol}] v3 {ema_signal.direction} conf={ema_signal.confidence}")
+            if ema_signal.direction != "NEUTRAL":
+                ema_config = {**CONFIG, "position_size_usd": EMA_POSITION_SIZE}
+                pt.open_paper_trade(ema_signal, symbol, ema_config, strategy_version=EMA_STRATEGY_VERSION)
 
         except Exception as e:
             logger.error(f"Error in strategy cycle [{symbol}]: {e}", exc_info=True)
