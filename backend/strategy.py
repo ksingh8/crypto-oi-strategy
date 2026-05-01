@@ -337,11 +337,23 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
         kind = 'confirm' if 'confirm' in delta['signal'] else 'divergence'
         reasons.append(f"CVD {kind}: slope {delta['cvd_slope']:+.0f} supporting {direction}")
     else:
-        reasons.append(f"CVD not confirming: slope {delta['cvd_slope']:+.0f}")
+        cvd_opposes = (direction == 'LONG' and 'bearish' in delta['signal']) or \
+                      (direction == 'SHORT' and 'bullish' in delta['signal'])
+        if cvd_opposes:
+            confirmations -= 1
+            reasons.append(f"CVD opposing {direction}: slope {delta['cvd_slope']:+.0f} -- confirmation subtracted")
+        else:
+            reasons.append(f"CVD not confirming: slope {delta['cvd_slope']:+.0f}")
 
     # Taker ratio — confirming adds pts, opposing subtracts
     taker_ratio = taker_history[-1].get('buy_sell_ratio', 1.0) if taker_history else 1.0
     indicators['taker_ratio'] = taker_ratio
+
+    # Spike cap: taker >= 3.0x = pump/dump candle, not sustained flow
+    if (direction == 'LONG' and taker_ratio >= 3.0) or (direction == 'SHORT' and taker_ratio <= 0.33):
+        reasons.append(f"Taker spike cap: {taker_ratio:.2f}x -- pump/dump candle, skipping")
+        return Signal('NEUTRAL', score, current_price, 0, 0, reasons, indicators)
+
     if direction == 'LONG' and taker_ratio >= 1.3:
         score += 10
         confirmations += 1
@@ -396,6 +408,13 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
         sl_price  = round(sl_raw, 4)
         tp_dist   = sl_dist * RR
         tp_price  = round(current_price * (1 - tp_dist / 100), 4)
+
+    # Min SL: if sweep wick too shallow, noise will stop us out
+    MIN_SL_PCT = 0.6
+    if sl_dist < MIN_SL_PCT:
+        reasons.append(f"SL too tight: {sl_dist:.2f}% < {MIN_SL_PCT}% min -- sweep wick too shallow")
+        indicators.update({'sl_pct': round(sl_dist, 3)})
+        return Signal('NEUTRAL', score, current_price, 0, 0, reasons, indicators)
 
     indicators.update({'sl_pct': round(sl_dist, 3), 'tp_pct': round(tp_dist, 3),
                        'rr_ratio': RR})
