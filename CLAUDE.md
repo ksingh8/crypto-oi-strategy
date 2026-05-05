@@ -1,5 +1,24 @@
 # OI Trading Bot (crypto-oi-strategy) — CLAUDE.md
 
+## CRITICAL: Communication & Output Rules
+
+### Token-Saving Communication
+- NO preamble. No "Great question!", "Certainly!", "Here's what I found:", "Let me analyze..."
+- Lead with the answer, the code, or the action. Not the explanation.
+- Show only the relevant diff or function — never the whole file unless asked.
+- Explain only if something is non-obvious or I specifically ask. 1-2 sentences max.
+- If something is a rule backed by evidence, state it and move on. Don't debate it.
+- When I say "yes" or "do it", proceed without asking for confirmation.
+
+### SSH Rules (reinforcing the mandatory workflow above)
+- NEVER make file edits directly on VPS via SSH — the workflow below is MANDATORY.
+- SSH is ONLY for: git pull + systemctl restart (step 5), status check (step 6), or SQL queries.
+- If any SSH command fails, DO NOT retry automatically. Report the error and wait for my input.
+
+### Session Efficiency
+- Reference the evidence in this file — don't re-analyze or re-litigate settled decisions.
+- The "WHY THESE RULES EXIST" and "DO NOT CHANGE" sections are non-negotiable unless I explicitly ask.
+
 ## What This Is
 Crypto futures trading bot using Open Interest, CVD divergence, RSI, and taker flow signals. Trades ETH and AVAX on Binance (v3_ema), ETH/AVAX/LTC (v2_sr).
 
@@ -58,70 +77,70 @@ ssh root@46.62.246.19 "sqlite3 /root/crypto-oi-strategy/backend/trading.db" < "G
 ```
 
 ## ⚠️ CRITICAL ARCHITECTURE NOTE
-**Always update `main.py` CONFIG dict (lines 21–27), NOT `strategy.py` defaults.**
-`strategy.py` defaults like `config.get("sl_pct", 1.2)` are NEVER reached — `main.py` always passes explicit values via the CONFIG dict.
+**Always update `main.py` CONFIG dict, NOT `strategy.py` defaults.**
+`strategy.py` defaults are NEVER reached — `main.py` always passes explicit values via CONFIG dict.
 To verify live settings: `curl http://localhost:8000/api/config`
 
-## Current Live Settings (as of 2026-04-21)
+## Current Live Settings (as of 2026-05-05)
 | Parameter | Value | Location |
 |-----------|-------|----------|
-| SL % | **1.2%** | main.py CONFIG dict |
-| TP % | **3.0%** | main.py CONFIG dict |
-| R:R | **2.5:1** | intentional — do NOT change to 2:1 |
-| Min confidence (LONG) | **65** | main.py CONFIG dict |
-| Min confidence (SHORT) | **75** | strategy.py MIN_SHORT_CONFIDENCE |
-| Symbols | **BTCUSDT, ETHUSDT only** | main.py |
-| Bad hours (UTC) | 0,2,4,5,11,16,17,22 | main.py BAD_HOURS_UTC |
+| v2_sr symbols | **ETHUSDT, AVAXUSDT, LTCUSDT** | main.py CONFIG["symbols"] |
+| v3_ema symbols | **ETHUSDT, AVAXUSDT only** | main.py EMA_SYMBOLS |
+| v2_sr position size | **$100** | main.py CONFIG |
+| v3_ema position size | **$50** | main.py EMA_POSITION_SIZE |
+| v2_sr min_confidence | **75** | main.py CONFIG / paper_trader.py |
+| v3_ema min_confidence | **80** | paper_trader.py (hardcoded, not CONFIG) |
+| v2_sr SL/TP | **dynamic** from sweep wick | strategy.py |
+| v3_ema SL/TP | **dynamic** 1.5:1 R:R from bar low/high | strategy_ema.py |
+| v3_ema 30-min cooldown | same-direction re-entry blocked after any close | paper_trader.py |
 
-## Active Quality Gates (all in strategy.py unless noted)
-| Gate | Rule |
-|------|------|
-| RSI gate (LONG) | Block RSI≥80; block RSI 62–80 without bullish funding; block RSI 40–50 dead zone |
-| RSI gate (SHORT) | Block RSI≤20; block RSI 20–38 without bearish funding |
-| Taker spike gate | Taker ratio ≥3.0x → ignored (panic pump, not sustained pressure) |
-| Taker entry floor | LONG blocked if taker < 1.3 (no real buyers = falling knife) |
-| CVD divergence gate | Bullish div ignored if taker < 0.80; bearish div ignored if taker > 1.20 |
-| Confirmation candle | LONG blocked if last 5m bar is red (close ≤ open) |
-| BTC macro filter | AVAX/LTC LONG blocked if BTC 4H EMA50 < EMA200 |
-| SHORTs disabled | Hard-blocked — historical SHORT WR = 13% (3/22 trades) |
-| Time filter | Entire signal cycle skipped during BAD_HOURS_UTC |
-| SL cooldown | 30 min cooldown per symbol after SL hit |
-| HTF trend filter | 4H EMA50 vs EMA200 directional filter |
+## DB Column Names (important for SQL queries)
+`pnl_usd`, `pnl_pct`, `opened_at`, `closed_at`, `strategy_version`, `confidence`, `exit_reason`
+NOT: `pnl`, `created_at`. Use cmd (not PowerShell) for SSH piping — PS breaks on `<` and `*`.
 
-## Why These Rules Exist (Evidence-Based)
-- **R:R 2.5:1 not 2:1:** At 37% WR, 2.5:1 EV = +0.35%/trade vs 2:1 = +0.13%/trade
-- **Time filter:** 25/25 bad-hour trades hit SL, 0 TP — overwhelming evidence
-- **No SOLUSDT:** 0/8 all-time (4 LONG + 4 SHORT) — every single one lost
-- **Taker spike cap ≥3.0x:** All 5 spike trades hit SL — panic pump not sustained
-- **SHORTs disabled:** 13% WR (3/22) vs 36% for LONGs — fundamentally a LONG strategy
-- **Conf floor 65:** conf=55 trades have 31% WR; conf≥65 has 37% WR and +0.25% EV/trade
+## Live Performance (as of 2026-05-05)
+### v3_ema — 49 trades total
+| Symbol | Trades | WR% | PnL | Status |
+|--------|--------|-----|-----|--------|
+| AVAX | 22 | 63.6% | +$2.10 | ✅ Star |
+| ETH | 16 | 50.0% | +$0.56 | ✅ |
+| LTC | 11 | 27.3% | -$0.57 | ❌ CUT |
+- LONG: 58.6% WR, +$2.70 | SHORT: 40.0% WR, -$0.61 (borderline — monitor)
+- Post quality-gates (May 4+): 44.4% WR / 18 trades
+- New scoring only (May 5+): 55.6% WR / 9 trades — strong early signal
 
-## Winner Profile (from 68-trade analysis)
-- Avg RSI: 43.5, Median RSI: 37.5 (oversold territory)
-- Taker sweet spot: 1.5–3.0x
-- ETH wins: 13, BTC wins: 7, SOL wins: 0
-- Best LONG RSI range: 30–40 (66% WR)
+### v2_sr — 13 trades total (too few for conclusions)
+| Symbol | Trades | WR% | PnL |
+|--------|--------|-----|-----|
+| LTC | 5 | 60.0% | +$3.82 | ✅ Best |
+| ETH | 4 | 50.0% | +$4.05 | ✅ |
+| AVAX | 4 | 25.0% | -$0.35 | ⚠️ Watch |
 
-## DO NOT CHANGE (without 20+ trades of new evidence)
-- Min confidence below 65 for LONGs
-- SHORT confidence below 75
+## Key Architecture Facts
+- **Confidence=100 in v3_ema is expected** — max possible score is 125 (capped at 100). When market trends cleanly all 5 dimensions fire. Not a bug. Range 75–100 seen in live data.
+- **had_recent_sl() is strategy-aware** (fixed 2026-05-05) — each strategy's SL cooldown only scans its own trades. Bug was: v3_ema SL was blocking v2_sr same-direction entries.
+- **LTC removed from v3_ema only** — kept in v2_sr (60% WR there). EMA_SYMBOLS controls v3_ema symbols independently of CONFIG["symbols"].
+- **v3_ema CVD is NOT a gate** — CVD is naturally negative during pullbacks. Adding CVD gate killed 100% of LONG setups in early testing. Do NOT add it back.
+- **v3_ema S/R-based TP was backtested and rejected** — 4H levels dropped WR 37%→22%. Fixed 1.5:1 is correct for 5m scalp natural move size.
+- **BTC fetched but not traded** — still in binance_client. If BTC macro filter needed, inject btc_htf_klines into alt market_data in main.py.
+
+## What to Watch Next
+- v3_ema: 30+ post-LTC-removal trades (ETH+AVAX only) before any conclusions
+- v3_ema SHORTs: cut if WR stays below 40% after 20 more trades
+- v2_sr AVAX: 25% WR on 4 trades — watch after 15 trades (target ≥50%)
+- v2_sr overall: need 20+ trades per symbol before any strategy changes
+- Do NOT increase v3_ema position size ($50→$100) until 50+ post-gates trades analyzed
+
+## DO NOT CHANGE (evidence-locked)
+- LTC in v3_ema — 27.3% WR / 11 trades is definitive
+- v3_ema CVD gate — kills LONG setups, backtested and rejected
+- v3_ema S/R TP — backtested and rejected (WR 37%→22%)
+- v3_ema R:R below 1.5:1 — backtest showed 1.5 matches natural 5m move size
+- v2_sr R:R 2.5:1 — at 37% WR, 2.5:1 EV = +0.35%/trade vs 2:1 = +0.13%/trade
 - Add SOLUSDT — 0/8 all-time is definitive
-- Change R:R to 2:1 — analysed and rejected 2026-04-16
-- Remove time filter — 25 bad-hour SLs, 0 TPs
-- Widen taker cap above 3.0x — all 5 spike trades lost
-- Remove confirmation candle gate — zero-cost filter
-- Remove BTC macro filter — alts bleed in BTC downtrends
-- Re-enable SHORTs — 13% WR is definitive
 
-## Deferred Improvements (do not implement until WR criteria met)
-- **ATR dynamic SL** — deferred until live WR > 40% (backtest avg loss went -1.20% → -2.33% with 4h ATR)
-- **Partial TP** (TP1=1.5% at 50%, SL→BE, TP2=3.0%) — deferred until live WR > 45%
-
-## What to Watch
-- After ~15–20 new trades under v3 gates, re-analyse WR (target: ≥45%)
-- If WR > 45%: implement partial TP (#4)
-- If WR > 40% for 20+ trades: implement ATR dynamic SL (#2)
-- If WR stays below 35%: investigate if SL 1.2% is still too tight
-
-## BTC Macro Filter Architecture
-BTC htf_klines injected into alt market_data by `main.py run_strategy_cycle`. Loop processes BTCUSDT first, caches its htf_klines, injects for AVAX/LTC. Zero extra API calls.
+## Deferred (do not implement until criteria met)
+- **Partial close** (50% at S/R + breakeven SL + runner) — deferred, needs base strategy validated
+- **Self-learning / mistake logging** — deferred, need more live trades to define the patterns
+- **v3_ema position size $50→$100** — after 50+ post-gates trades
+- **v2_sr ATR dynamic SL** — after live WR > 40% for 20+ trades
