@@ -193,12 +193,56 @@ def generate_ema_signal(market_data: dict, config: dict):
 
     # ── 5. Confidence score ───────────────────────────────────────────────────
     score = 65  # base: trend + pullback detected
-    if direction == "LONG"  and taker_ratio >= 1.3: score += 20
+
+    # Taker ratio (same gate thresholds, kept as is)
+    if direction == "LONG"   and taker_ratio >= 1.3:  score += 20
     elif direction == "SHORT" and taker_ratio <= 0.75: score += 20
-    elif direction == "LONG"  and taker_ratio >= 1.1: score += 10
-    elif direction == "SHORT" and taker_ratio <= 0.9: score += 10
+    elif direction == "LONG"   and taker_ratio >= 1.1: score += 10
+    elif direction == "SHORT"  and taker_ratio <= 0.9: score += 10
+
+    # Freshness bonus
     if pullback["lookback"] == 2: score += 5   # fresher signal
+
+    # Dimension 2: EMA21 touch quality — how cleanly did price touch EMA21?
+    bar       = pullback["bar"]
+    touch_dist = abs(bar["close"] - e21) / e21 * 100
+    if touch_dist <= 0.1:
+        score += 15   # textbook clean touch
+        reasons.append(f"EMA touch quality: excellent ({touch_dist:.2f}% from EMA21)")
+    elif touch_dist <= 0.2:
+        score += 10
+        reasons.append(f"EMA touch quality: good ({touch_dist:.2f}% from EMA21)")
+    else:
+        reasons.append(f"EMA touch quality: marginal ({touch_dist:.2f}% from EMA21, wick only)")
+
+    # Dimension 3: 15m trend strength — EMA9 vs EMA21 spread
+    trend_spread = abs(trend_info["ema9"] - trend_info["ema21"]) / trend_info["ema21"] * 100
+    if trend_spread >= 0.3:
+        score += 10
+        reasons.append(f"15m trend strength: strong (spread {trend_spread:.2f}%)")
+    elif trend_spread >= 0.1:
+        score += 5
+        reasons.append(f"15m trend strength: moderate (spread {trend_spread:.2f}%)")
+    else:
+        reasons.append(f"15m trend strength: weak (spread {trend_spread:.2f}%) — EMA barely separated")
+
+    # Dimension 4: Bar close strength — did bar close decisively in trend direction?
+    bar_range = bar["high"] - bar["low"]
+    if bar_range > 0:
+        if direction == "LONG":
+            close_position = (bar["close"] - bar["low"]) / bar_range
+            strong_close = close_position >= 0.7
+        else:
+            close_position = (bar["high"] - bar["close"]) / bar_range
+            strong_close = close_position >= 0.7
+        if strong_close:
+            score += 10
+            reasons.append(f"Bar close strength: strong (closed in top/bottom 30% of range)")
+        else:
+            reasons.append(f"Bar close strength: weak (indecisive close)")
+
     indicators["score"] = score
+    indicators.update({"touch_dist_pct": round(touch_dist, 3), "trend_spread_pct": round(trend_spread, 3)})
 
     return Signal(
         direction=direction,

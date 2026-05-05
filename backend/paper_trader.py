@@ -110,9 +110,31 @@ def should_open_trade(signal, symbol: str, config: dict,
                       strategy_version: str = "v2_sr") -> tuple[bool, str]:
     if signal.direction == "NEUTRAL":
         return False, "No signal"
-    min_conf = 65 if strategy_version == "v3_ema" else config.get("min_confidence", 75)
+    min_conf = 80 if strategy_version == "v3_ema" else config.get("min_confidence", 75)
     if signal.confidence < min_conf:
         return False, f"Confidence too low ({signal.confidence} < {min_conf})"
+    # v3_ema cooldown: block same-direction re-entry within 30 min of last closed trade
+    if strategy_version == "v3_ema":
+        with db.get_db() as conn:
+            row = conn.execute(
+                """SELECT direction, closed_at FROM trades
+                   WHERE symbol = ? AND strategy_version = 'v3_ema' AND status = 'CLOSED'
+                   ORDER BY closed_at DESC LIMIT 1""",
+                (symbol,)
+            ).fetchone()
+        if row and row["closed_at"]:
+            try:
+                closed_at = datetime.fromisoformat(row["closed_at"])
+                mins_since = (datetime.utcnow() - closed_at).total_seconds() / 60
+                if mins_since < 30:
+                    last_dir = row["direction"]
+                    if signal.direction == last_dir:
+                        return False, (
+                            f"v3_ema cooldown: 30min not elapsed since last "
+                            f"{last_dir} trade on {symbol} ({mins_since:.1f}m ago)"
+                        )
+            except Exception:
+                pass
     all_open   = db.get_open_trades(symbol)
     strat_open = [t for t in all_open if t.get("strategy_version") == strategy_version]
     if len(strat_open) >= MAX_OPEN_TRADES:
