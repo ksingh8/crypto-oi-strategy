@@ -15,6 +15,7 @@ import database as db
 import paper_trader as pt
 from strategy import generate_signal
 from strategy_ema import generate_ema_signal
+from sr_alerts import check_sr_alerts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -29,6 +30,11 @@ CONFIG = {
     "signal_interval_minutes": int(os.getenv("SIGNAL_INTERVAL",  "5")),
     "strategy_version":      "v2_sr",
 }
+
+# ── Telegram S/R alert config ──────────────────────────────────────────────────
+# Set these as env vars on VPS: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+SR_ALERT_PROXIMITY_PCT    = float(os.getenv("SR_ALERT_PROXIMITY_PCT",    "0.3"))   # % distance to trigger
+SR_ALERT_COOLDOWN_MINUTES = int(os.getenv("SR_ALERT_COOLDOWN_MINUTES",   "60"))    # min gap between same-level alerts
 
 STRATEGY_VERSION     = "v2_sr"
 EMA_STRATEGY_VERSION = "v3_ema"
@@ -92,6 +98,13 @@ async def run_strategy_cycle():
                 if ema_signal.direction != "NEUTRAL":
                     ema_config = {**CONFIG, "position_size_usd": EMA_POSITION_SIZE}
                     pt.open_paper_trade(ema_signal, symbol, ema_config, strategy_version=EMA_STRATEGY_VERSION)
+
+            # ── S/R level alerts (Telegram, alert-only) ─────────────
+            await check_sr_alerts(
+                symbol, market_data,
+                proximity_pct=SR_ALERT_PROXIMITY_PCT,
+                cooldown_minutes=SR_ALERT_COOLDOWN_MINUTES,
+            )
 
         except Exception as e:
             logger.error(f"Error in strategy cycle [{symbol}]: {e}", exc_info=True)
