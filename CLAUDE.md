@@ -93,6 +93,8 @@ To verify live settings: `curl http://localhost:8000/api/config`
 | v2_sr SL/TP | **dynamic** from sweep wick | strategy.py |
 | v3_ema SL/TP | **dynamic** 1.5:1 R:R from bar low/high | strategy_ema.py |
 | v3_ema 30-min cooldown | same-direction re-entry blocked after any close | paper_trader.py |
+| Telegram SR alerts | price within 0.3% of 4H/Daily S/R level → alert fires | sr_alerts.py |
+| SR alert cooldown | 60 min between repeated alerts for same level | sr_alerts.py SR_ALERT_COOLDOWN_MINUTES |
 
 ## DB Column Names (important for SQL queries)
 `pnl_usd`, `pnl_pct`, `opened_at`, `closed_at`, `strategy_version`, `confidence`, `exit_reason`
@@ -123,6 +125,7 @@ NOT: `pnl`, `created_at`. Use cmd (not PowerShell) for SSH piping — PS breaks 
 - **v3_ema CVD is NOT a gate** — CVD is naturally negative during pullbacks. Adding CVD gate killed 100% of LONG setups in early testing. Do NOT add it back.
 - **v3_ema S/R-based TP was backtested and rejected** — 4H levels dropped WR 37%→22%. Fixed 1.5:1 is correct for 5m scalp natural move size.
 - **BTC fetched but not traded** — still in binance_client. If BTC macro filter needed, inject btc_htf_klines into alt market_data in main.py.
+- **sr_alerts.py is alert-only** — fires Telegram when price within 0.3% of 4H/Daily pivot level. No trades opened. Uses same TELEGRAM_TOKEN/TELEGRAM_CHAT creds as paper_trader.py. Called once per symbol per strategy cycle in main.py.
 
 ## What to Watch Next
 - v3_ema: 30+ post-LTC-removal trades (ETH+AVAX only) before any conclusions
@@ -130,6 +133,7 @@ NOT: `pnl`, `created_at`. Use cmd (not PowerShell) for SSH piping — PS breaks 
 - v2_sr AVAX: 25% WR on 4 trades — watch after 15 trades (target ≥50%)
 - v2_sr overall: need 20+ trades per symbol before any strategy changes
 - Do NOT increase v3_ema position size ($50→$100) until 50+ post-gates trades analyzed
+- **SR alert → shadow trade strategy**: deferred. Use alerts to manually observe 15m confluence (engulfing, OI, CVD) at 4H/Daily levels for 2-3 weeks before coding. Not enough evidence yet to justify a third strategy.
 
 ## DO NOT CHANGE (evidence-locked)
 - LTC in v3_ema — 27.3% WR / 11 trades is definitive
