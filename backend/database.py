@@ -229,13 +229,24 @@ def get_price_history(symbol: str, limit: int = 200) -> list:
         """, (symbol, limit)).fetchall()
         return [dict(r) for r in reversed(rows)]
 
-def had_recent_sl(symbol: str, direction: str, minutes: int = 30) -> bool:
+def had_recent_sl(symbol: str, direction: str, minutes: int = 30,
+                  strategy_version: str = None) -> bool:
     with get_db() as conn:
-        row = conn.execute(
-            """SELECT COUNT(*) AS c FROM trades
-               WHERE symbol = ? AND direction = ? AND exit_reason = 'SL'
-               AND closed_at >= datetime('now', ?)
-            """,
-            (symbol, direction, f'-{minutes} minutes')
-        ).fetchone()
+        if strategy_version:
+            row = conn.execute(
+                """SELECT COUNT(*) AS c FROM trades
+                   WHERE symbol = ? AND direction = ? AND exit_reason = 'SL'
+                   AND strategy_version = ?
+                   AND closed_at >= datetime('now', ?)
+                """,
+                (symbol, direction, strategy_version, f'-{minutes} minutes')
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """SELECT COUNT(*) AS c FROM trades
+                   WHERE symbol = ? AND direction = ? AND exit_reason = 'SL'
+                   AND closed_at >= datetime('now', ?)
+                """,
+                (symbol, direction, f'-{minutes} minutes')
+            ).fetchone()
         return (row['c'] or 0) > 0

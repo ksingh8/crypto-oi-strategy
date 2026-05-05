@@ -142,7 +142,7 @@ def should_open_trade(signal, symbol: str, config: dict,
     same_dir = [t for t in strat_open if t["direction"] == signal.direction]
     if same_dir:
         return False, f"Already have open {signal.direction} {strategy_version} trade"
-    if db.had_recent_sl(symbol, signal.direction, minutes=30):
+    if db.had_recent_sl(symbol, signal.direction, minutes=30, strategy_version=strategy_version):
         return False, f"SL cooldown active — skipping {signal.direction} for 30 min"
     return True, "OK"
 
