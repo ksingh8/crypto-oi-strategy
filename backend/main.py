@@ -99,12 +99,6 @@ async def run_strategy_cycle():
                     ema_config = {**CONFIG, "position_size_usd": EMA_POSITION_SIZE}
                     pt.open_paper_trade(ema_signal, symbol, ema_config, strategy_version=EMA_STRATEGY_VERSION)
 
-            # ── S/R level alerts (Telegram, alert-only) ─────────────
-            await check_sr_alerts(
-                symbol, market_data,
-                proximity_pct=SR_ALERT_PROXIMITY_PCT,
-                cooldown_minutes=SR_ALERT_COOLDOWN_MINUTES,
-            )
 
         except Exception as e:
             logger.error(f"Error in strategy cycle [{symbol}]: {e}", exc_info=True)
