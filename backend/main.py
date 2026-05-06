@@ -34,7 +34,7 @@ CONFIG = {
 # ── Telegram S/R alert config ──────────────────────────────────────────────────
 # Set these as env vars on VPS: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 SR_ALERT_PROXIMITY_PCT    = float(os.getenv("SR_ALERT_PROXIMITY_PCT",    "0.3"))   # % distance to trigger
-SR_ALERT_COOLDOWN_MINUTES = int(os.getenv("SR_ALERT_COOLDOWN_MINUTES",   "60"))    # min gap between same-level alerts
+SR_ALERT_COOLDOWN_MINUTES = int(os.getenv("SR_ALERT_COOLDOWN_MINUTES",   "240"))   # min gap between same-level alerts
 
 STRATEGY_VERSION     = "v2_sr"
 EMA_STRATEGY_VERSION = "v3_ema"
