@@ -102,6 +102,8 @@ def detect_ema_pullback(klines_5m: list, trend: str, pullback_tol: float = 0.4) 
     return empty
 
 
+EMA_BAD_HOURS_UTC = {2, 3, 4, 5}  # 10pm-2am EDT — 27.9% WR / 34 trades (live data + backtest converge)
+
 def generate_ema_signal(market_data: dict, config: dict):
     """
     EMA pullback scalp signal (v3_ema).
@@ -120,6 +122,10 @@ def generate_ema_signal(market_data: dict, config: dict):
 
     if not current_price:
         return Signal("NEUTRAL", 0, 0, 0, 0, ["No price data"], {})
+
+    # ── Time filter: block dead-zone hours (10pm–2am EDT / UTC 02–05) ─────────
+    if datetime.utcnow().hour in EMA_BAD_HOURS_UTC:
+        return Signal("NEUTRAL", 0, current_price, 0, 0, ["Bad hour UTC"], {})
 
     reasons    = []
     indicators = {"current_price": current_price, "strategy": "v3_ema"}
