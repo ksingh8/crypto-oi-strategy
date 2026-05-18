@@ -42,6 +42,9 @@ EMA_POSITION_SIZE    = 50   # smaller size for higher-frequency EMA scalps
 # LTC excluded from v3_ema: 27.3% WR / 11 trades (below 35% cut threshold)
 # LTC kept in CONFIG["symbols"] for v2_sr which has 60% WR / 5 trades on LTC
 EMA_SYMBOLS          = ["ETHUSDT", "AVAXUSDT"]
+# Per-symbol direction blocks for v3_ema (evidence-based cuts)
+# ETH LONG cut: 15 trades / 26.7% WR as of 2026-05-18 (same pattern as LTC cut at 27.3%)
+EMA_BLOCKED_DIRECTIONS = {"ETHUSDT": ["LONG"]}
 
 scheduler          = AsyncIOScheduler()
 latest_market_data = {}
@@ -95,7 +98,8 @@ async def run_strategy_cycle():
                 ema_signal = generate_ema_signal(market_data, CONFIG)
                 db.save_signal(ema_signal, symbol, strategy_version=EMA_STRATEGY_VERSION)
                 logger.info(f"[{symbol}] v3 {ema_signal.direction} conf={ema_signal.confidence}")
-                if ema_signal.direction != "NEUTRAL":
+                blocked = EMA_BLOCKED_DIRECTIONS.get(symbol, [])
+                if ema_signal.direction != "NEUTRAL" and ema_signal.direction not in blocked:
                     ema_config = {**CONFIG, "position_size_usd": EMA_POSITION_SIZE}
                     pt.open_paper_trade(ema_signal, symbol, ema_config, strategy_version=EMA_STRATEGY_VERSION)
 
