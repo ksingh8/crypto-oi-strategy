@@ -212,6 +212,8 @@ def get_htf_trend(htf_klines: list) -> dict:
     return {'trend': trend, 'ema50': round(ema50, 4), 'ema200': round(ema200, 4)}
 
 
+SR_BAD_HOURS_UTC = {8}  # London open — 0% WR / 7 trades, S/R levels get swept at open before trending
+
 def generate_signal(market_data: dict, config: dict) -> Signal:
     """
     S/R + Order Flow signal generator (v2).
@@ -235,6 +237,10 @@ def generate_signal(market_data: dict, config: dict) -> Signal:
 
     if not current_price:
         return Signal('NEUTRAL', 0, 0, 0, 0, ['No price data'], {})
+
+    # ── Time filter: block London open whipsaw hour (UTC 08 = 4am EDT) ─────────
+    if datetime.utcnow().hour in SR_BAD_HOURS_UTC:
+        return Signal('NEUTRAL', 0, current_price, 0, 0, ['Bad hour UTC'], {})
 
     reasons    = []
     indicators = {'current_price': current_price}

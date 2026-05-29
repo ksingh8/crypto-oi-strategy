@@ -102,7 +102,7 @@ def detect_ema_pullback(klines_5m: list, trend: str, pullback_tol: float = 0.4) 
     return empty
 
 
-EMA_BAD_HOURS_UTC = {2, 3, 4, 5}  # 10pm-2am EDT — 27.9% WR / 34 trades (live data + backtest converge)
+EMA_BAD_HOURS_UTC = {2, 3, 4, 5, 21, 22, 23}  # 10pm-2am EDT + 5-7pm EDT — dead zones, <20% WR (live data)
 
 def generate_ema_signal(market_data: dict, config: dict):
     """
