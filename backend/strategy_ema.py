@@ -104,6 +104,29 @@ def detect_ema_pullback(klines_5m: list, trend: str, pullback_tol: float = 0.4) 
 
 EMA_BAD_HOURS_UTC = {2, 3, 4, 5, 21, 22, 23}  # 10pm-2am EDT + 5-7pm EDT — dead zones, <20% WR (live data)
 
+# 24H HTF trend threshold — 1% move over 24H defines bullish/bearish regime
+# Data: SHORT in bearish 24H = 52.4% WR; SHORT in bullish 24H = 34.6% WR
+#       LONG in bullish 24H = 44.8% WR; LONG in bearish/neutral = 29-41% WR
+HTF_TREND_THRESHOLD = 0.01  # 1% price change over 24H
+
+def get_24h_trend(htf_klines: list) -> str:
+    """Compare current 4H close vs close 6 bars ago (≈24H). Returns bullish/bearish/neutral."""
+    if not htf_klines or len(htf_klines) < 7:
+        return "neutral"
+    price_now  = htf_klines[-1]["close"]
+    price_24h  = htf_klines[-7]["close"]
+    if price_24h == 0:
+        return "neutral"
+    change = (price_now - price_24h) / price_24h
+    if change > HTF_TREND_THRESHOLD:
+        return "bullish"
+    if change < -HTF_TREND_THRESHOLD:
+        return "bearish"
+    return "neutral"
+
+# Minimum confidence for counter-trend trades (vs regime)
+HTF_COUNTER_TREND_MIN_CONF = 95
+
 def generate_ema_signal(market_data: dict, config: dict):
     """
     EMA pullback scalp signal (v3_ema).
@@ -151,6 +174,15 @@ def generate_ema_signal(market_data: dict, config: dict):
     indicators.update({"ema21_5m": e21, "pullback_bars_ago": pullback["lookback"]})
     reasons.append(f"15m {trend.upper()} trend | 5m EMA21 pullback @ {e21} "
                    f"({pullback['lookback']} bars ago), closed in trend direction")
+
+    # ── 2b. 24H HTF trend filter ──────────────────────────────────────────────
+    # SHORT in bearish 24H = 52.4% WR; SHORT in bullish 24H = 34.6% (-$0.63)
+    # LONG in bullish 24H = 44.8% WR; LONG in bearish/neutral = 29-41% WR
+    htf_klines  = market_data.get("htf_klines") or []
+    trend_24h   = get_24h_trend(htf_klines)
+    indicators["trend_24h"] = trend_24h
+    counter_trend = (direction == "SHORT" and trend_24h == "bullish") or \
+                    (direction == "LONG"  and trend_24h in ("bearish", "neutral"))
 
     # ── 3. Taker confirmation ─────────────────────────────────────────────────
     taker_ratio = taker_history[-1].get("buy_sell_ratio", 1.0) if taker_history else 1.0
@@ -249,6 +281,12 @@ def generate_ema_signal(market_data: dict, config: dict):
 
     indicators["score"] = score
     indicators.update({"touch_dist_pct": round(touch_dist, 3), "trend_spread_pct": round(trend_spread, 3)})
+
+    # ── HTF counter-trend gate: require score >= 95 to go against 24H regime ──
+    if counter_trend and score < HTF_COUNTER_TREND_MIN_CONF:
+        return Signal("NEUTRAL", 0, current_price, 0, 0,
+                      [f"Counter-trend {direction} vs 24H {trend_24h} trend — score {score} < {HTF_COUNTER_TREND_MIN_CONF}"],
+                      indicators)
 
     return Signal(
         direction=direction,
