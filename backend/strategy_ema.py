@@ -102,7 +102,7 @@ def detect_ema_pullback(klines_5m: list, trend: str, pullback_tol: float = 0.4) 
     return empty
 
 
-EMA_BAD_HOURS_UTC = {2, 3, 4, 5, 21, 22, 23}  # 10pm-2am EDT + 5-7pm EDT — dead zones, <20% WR (live data)
+EMA_BAD_HOURS_UTC = {2, 3, 4, 5, 9, 10, 11, 12, 13, 14, 21, 22, 23}  # 10pm-2am EDT + 5-7pm EDT + NY open 09-14 UTC — 0% WR (live data Jul 2026)
 
 # 24H HTF trend threshold — 1% move over 24H defines bullish/bearish regime
 # Data: SHORT in bearish 24H = 52.4% WR; SHORT in bullish 24H = 34.6% WR
@@ -121,6 +121,28 @@ def get_24h_trend(htf_klines: list) -> str:
     if change > HTF_TREND_THRESHOLD:
         return "bullish"
     if change < -HTF_TREND_THRESHOLD:
+        return "bearish"
+    return "neutral"
+
+def get_ema50_bias(htf_klines: list, daily_klines: list) -> str:
+    """
+    Returns 'bullish', 'bearish', or 'neutral'.
+    Requires BOTH 4H and Daily price above their EMA50 for bullish.
+    Requires BOTH below for bearish. Mixed = neutral.
+    """
+    def above_ema50(klines):
+        if not klines or len(klines) < 50:
+            return None
+        closes = [k["close"] for k in klines]
+        e50 = _ema(closes, 50)
+        return closes[-1] > e50[-1]
+
+    four_h_bull = above_ema50(htf_klines)
+    daily_bull  = above_ema50(daily_klines)
+
+    if four_h_bull is True and daily_bull is True:
+        return "bullish"
+    if four_h_bull is False and daily_bull is False:
         return "bearish"
     return "neutral"
 
@@ -178,11 +200,22 @@ def generate_ema_signal(market_data: dict, config: dict):
     # ── 2b. 24H HTF trend filter ──────────────────────────────────────────────
     # SHORT in bearish 24H = 52.4% WR; SHORT in bullish 24H = 34.6% (-$0.63)
     # LONG in bullish 24H = 44.8% WR; LONG in bearish/neutral = 29-41% WR
-    htf_klines  = market_data.get("htf_klines") or []
-    trend_24h   = get_24h_trend(htf_klines)
-    indicators["trend_24h"] = trend_24h
+    htf_klines   = market_data.get("htf_klines")   or []
+    daily_klines = market_data.get("daily_klines") or []
+    trend_24h    = get_24h_trend(htf_klines)
+    ema50_bias   = get_ema50_bias(htf_klines, daily_klines)
+    indicators["trend_24h"]  = trend_24h
+    indicators["ema50_bias"] = ema50_bias
     counter_trend = (direction == "SHORT" and trend_24h == "bullish") or \
                     (direction == "LONG"  and trend_24h in ("bearish", "neutral"))
+
+    # ── 2c. LONG EMA50 confluence filter ─────────────────────────────────────
+    # Block LONGs unless 4H AND Daily are both above EMA50 (bullish structure).
+    # v2_sr LONG loss rate 85.7% in July — market was below EMA50 on both TFs.
+    if direction == "LONG" and ema50_bias != "bullish":
+        return Signal("NEUTRAL", 0, current_price, 0, 0,
+                      [f"LONG blocked: EMA50 bias={ema50_bias} (need 4H+Daily both above EMA50)"],
+                      indicators)
 
     # ── 3. Taker confirmation ─────────────────────────────────────────────────
     taker_ratio = taker_history[-1].get("buy_sell_ratio", 1.0) if taker_history else 1.0

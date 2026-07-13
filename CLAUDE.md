@@ -93,8 +93,7 @@ To verify live settings: `curl http://localhost:8000/api/config`
 | v2_sr SL/TP | **dynamic** from sweep wick | strategy.py |
 | v3_ema SL/TP | **dynamic** 1.5:1 R:R from bar low/high | strategy_ema.py |
 | v3_ema 30-min cooldown | same-direction re-entry blocked after any close | paper_trader.py |
-| Telegram SR alerts | price within 0.3% of 4H/Daily S/R level → alert fires | sr_alerts.py |
-| SR alert cooldown | 60 min between repeated alerts for same level | sr_alerts.py SR_ALERT_COOLDOWN_MINUTES |
+| Telegram SR alerts | **DISABLED** — sr_alerts.py exists but check_sr_alerts() call removed from run_strategy_cycle() | sr_alerts.py / main.py |
 
 ## DB Column Names (important for SQL queries)
 `pnl_usd`, `pnl_pct`, `opened_at`, `closed_at`, `strategy_version`, `confidence`, `exit_reason`
@@ -125,7 +124,7 @@ NOT: `pnl`, `created_at`. Use cmd (not PowerShell) for SSH piping — PS breaks 
 - **v3_ema CVD is NOT a gate** — CVD is naturally negative during pullbacks. Adding CVD gate killed 100% of LONG setups in early testing. Do NOT add it back.
 - **v3_ema S/R-based TP was backtested and rejected** — 4H levels dropped WR 37%→22%. Fixed 1.5:1 is correct for 5m scalp natural move size.
 - **BTC fetched but not traded** — still in binance_client. If BTC macro filter needed, inject btc_htf_klines into alt market_data in main.py.
-- **sr_alerts.py is alert-only** — fires Telegram when price within 0.3% of 4H/Daily pivot level. No trades opened. Uses same TELEGRAM_TOKEN/TELEGRAM_CHAT creds as paper_trader.py. Called once per symbol per strategy cycle in main.py.
+- **sr_alerts.py is DISABLED** — file exists with full logic (4H/Daily pivot proximity, signal summary, trade bias). Was too noisy. Removed from run_strategy_cycle() in main.py. Re-enable by adding `await check_sr_alerts(symbol, market_data, ...)` back into the loop. Uses same TELEGRAM_TOKEN/TELEGRAM_CHAT creds as paper_trader.py.
 
 ## What to Watch Next
 - v3_ema: 30+ post-LTC-removal trades (ETH+AVAX only) before any conclusions
@@ -142,6 +141,7 @@ NOT: `pnl`, `created_at`. Use cmd (not PowerShell) for SSH piping — PS breaks 
 - v3_ema R:R below 1.5:1 — backtest showed 1.5 matches natural 5m move size
 - v2_sr R:R 2.5:1 — at 37% WR, 2.5:1 EV = +0.35%/trade vs 2:1 = +0.13%/trade
 - Add SOLUSDT — 0/8 all-time is definitive
+- Add XAUUSDT — no Binance Futures perpetual contract, no OI/funding/taker data available
 
 ## Deferred (do not implement until criteria met)
 - **Partial close** (50% at S/R + breakeven SL + runner) — deferred, needs base strategy validated

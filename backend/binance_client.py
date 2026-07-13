@@ -98,10 +98,11 @@ async def get_all_market_data(symbol: str) -> dict:
         get_taker_ratio(symbol, "5m", 24),      # taker buy/sell — delta confirmation
         get_klines(symbol, "15m", 60),          # 15m klines — sweep + retest detection
         get_orderbook(symbol, limit=20),        # order book depth — who is in control
+        get_klines(symbol, "1d", 60),           # Daily klines — EMA50 HTF bias for LONG filter
         return_exceptions=True
     )
     keys = ["oi", "oi_history", "funding", "klines", "ls_ratio", "ticker",
-            "htf_klines", "taker_ratio", "klines_15m", "orderbook"]
+            "htf_klines", "taker_ratio", "klines_15m", "orderbook", "daily_klines"]
     out = {}
     for k, v in zip(keys, results):
         if isinstance(v, Exception):
