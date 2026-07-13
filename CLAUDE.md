@@ -12,7 +12,7 @@
 
 ### SSH Rules (reinforcing the mandatory workflow above)
 - NEVER make file edits directly on VPS via SSH — the workflow below is MANDATORY.
-- SSH is ONLY for: git pull + systemctl restart (step 5), status check (step 6), or SQL queries.
+- SSH is ONLY for: git pull + pm2 restart (step 5), status check (step 6), or SQL queries.
 - If any SSH command fails, DO NOT retry automatically. Report the error and wait for my input.
 
 ### Session Efficiency
@@ -26,7 +26,7 @@ Crypto futures trading bot using Open Interest, CVD divergence, RSI, and taker f
 - **Server:** 46.62.246.19 (root SSH key)
 - **Bot path:** `/root/crypto-oi-strategy/`
 - **Entry point:** `/root/crypto-oi-strategy/backend/strategy.py` (logic), `main.py` (runner)
-- **Service:** `systemctl restart trading-bot` / `systemctl status trading-bot`
+- **Service:** `pm2 restart oi-ema` / `pm2 status oi-ema` (PM2 owns this — systemd service is disabled)
 - **DB:** `/root/crypto-oi-strategy/backend/trading.db` (table: `trades`)
 - **Dashboard:** https://trading.kuldeeps.com (Cloudflare Access)
 - **Fallback:** http://46.62.246.19:8082 → localhost:8000
@@ -62,12 +62,12 @@ git -C "G:\My Drive\projects\crypto-oi-strategy" push origin master
 
 ### Step 5 — Deploy to VPS
 ```
-ssh root@46.62.246.19 "cd /root/crypto-oi-strategy && git pull origin master && systemctl restart trading-bot"
+ssh root@46.62.246.19 "cd /root/crypto-oi-strategy && git pull origin master && pm2 restart oi-ema"
 ```
 
 ### Step 6 — Verify
 ```
-ssh root@46.62.246.19 "sleep 3 && systemctl status trading-bot --no-pager | head -5"
+ssh root@46.62.246.19 "sleep 3 && pm2 status oi-ema"
 ```
 
 ### Trade data analysis (no SSH needed)
