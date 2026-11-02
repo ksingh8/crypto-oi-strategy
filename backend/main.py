@@ -41,10 +41,13 @@ EMA_STRATEGY_VERSION = "v3_ema"
 EMA_POSITION_SIZE    = 50   # smaller size for higher-frequency EMA scalps
 # LTC excluded from v3_ema: 27.3% WR / 11 trades (below 35% cut threshold)
 # LTC kept in CONFIG["symbols"] for v2_sr which has 60% WR / 5 trades on LTC
-EMA_SYMBOLS          = ["ETHUSDT", "AVAXUSDT"]
+# PAUSED 2026-11-02: 748 trades, 41% WR at 1.5:1, +$5 gross (negative after fees); score not predictive
+EMA_SYMBOLS          = []
 # Per-symbol direction blocks for v3_ema (evidence-based cuts)
 # ETH LONG cut: 15 trades / 26.7% WR as of 2026-05-18 (same pattern as LTC cut at 27.3%)
 EMA_BLOCKED_DIRECTIONS = {"ETHUSDT": ["LONG"]}
+# AVAX LONG: 40 trades, 22.5% WR, -$7.68 (all in bullish HTF, so HTF filter doesn't catch it)
+SR_BLOCKED_DIRECTIONS = {"AVAXUSDT": ["LONG"]}
 
 scheduler          = AsyncIOScheduler()
 latest_market_data = {}
@@ -90,7 +93,7 @@ async def run_strategy_cycle():
             signal = generate_signal(market_data, CONFIG)
             db.save_signal(signal, symbol, strategy_version=STRATEGY_VERSION)
             logger.info(f"[{symbol}] v2 {signal.direction} conf={signal.confidence} price={current_price}")
-            if signal.direction != "NEUTRAL":
+            if signal.direction != "NEUTRAL" and signal.direction not in SR_BLOCKED_DIRECTIONS.get(symbol, []):
                 pt.open_paper_trade(signal, symbol, CONFIG, strategy_version=STRATEGY_VERSION)
 
             # ── v3_ema: EMA Pullback Scalp signal (ETH + AVAX only) ─
