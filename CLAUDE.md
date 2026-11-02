@@ -85,7 +85,8 @@ To verify live settings: `curl http://localhost:8000/api/config`
 | Parameter | Value | Location |
 |-----------|-------|----------|
 | v2_sr symbols | **ETHUSDT, AVAXUSDT, LTCUSDT** | main.py CONFIG["symbols"] |
-| v3_ema symbols | **ETHUSDT, AVAXUSDT only** | main.py EMA_SYMBOLS |
+| v3_ema symbols | **PAUSED (EMA_SYMBOLS = []) since 2026-11-02** — 748 trades, 41% WR, ~break-even before fees | main.py EMA_SYMBOLS |
+| v2_sr AVAX LONG | **BLOCKED since 2026-11-02** — 40 trades, 22.5% WR, -$7.68 | main.py SR_BLOCKED_DIRECTIONS |
 | v2_sr position size | **$100** | main.py CONFIG |
 | v3_ema position size | **$50** | main.py EMA_POSITION_SIZE |
 | v2_sr min_confidence | **75** | main.py CONFIG / paper_trader.py |
